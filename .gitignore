@@ -1,0 +1,12 @@
+# build artifacts
+*.exe
+*.mod
+*.o
+*.obj
+
+# solver output
+*.vtk
+*.dat
+
+# editor settings
+.vscode/
