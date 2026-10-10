@@ -3,6 +3,7 @@
 *.mod
 *.o
 *.obj
+build/
 
 # solver output
 *.vtk
