@@ -15,19 +15,26 @@ module flow
 
     subroutine init_flow()
 
-        integer :: i,j
+        integer :: ic,jc
         real(dp) :: W(nvar)
 
         allocate(Q(nvar,0:nx+1,0:ny+1))
+        Q = 0.0_dp                       ! 고스트(모서리 포함)에 쓰레기값이 남지 않게
 
-        W(1) = rho_init
-        W(2) = u_init
-        W(3) = v_init
-        W(4) = p_init
-
-        do j = 1,ny
-            do i = 1,nx
-                call p2c(W,Q(:,i,j))
+        do jc = 1,ny
+            do ic = 1,nx
+                select case (case_name)
+                case ('sod')
+                    if (xc(ic,jc) < x_mid) then
+                        W = W_left
+                    else
+                        W = W_right
+                    end if
+                case default
+                    ! 전체를 자유류로 시작
+                    W = [rho_init, u_init, v_init, p_init]
+                end select
+                call p2c(W,Q(:,ic,jc))
             end do
         end do
 
@@ -35,18 +42,18 @@ module flow
 
     !> 고스트 셀 채우기 (매 스텝, 잔차 계산 전에 호출)
     subroutine bc()
-        integer :: i,j
+        integer :: ic,jc
 
-        ! 왼쪽 (i=0), 오른쪽 (i=nx+1) : i-면 법선 사용
-        do j = 1,ny
-            call ghost(bc_type(1), Q(:,1,j),  si_x(0,j),  si_y(0,j),  Q(:,0,j))
-            call ghost(bc_type(2), Q(:,nx,j), si_x(nx,j), si_y(nx,j), Q(:,nx+1,j))
+        ! 왼쪽 고스트 (ic=0), 오른쪽 고스트 (ic=nx+1) : 경계 i-면 fi=0, fi=nx 의 법선 사용
+        do jc = 1,ny
+            call ghost(bc_type(1), Q(:,1,jc),  si_x(0,jc),  si_y(0,jc),  Q(:,0,jc))
+            call ghost(bc_type(2), Q(:,nx,jc), si_x(nx,jc), si_y(nx,jc), Q(:,nx+1,jc))
         end do
 
-        ! 아래 (j=0), 위 (j=ny+1) : j-면 법선 사용
-        do i = 1,nx
-            call ghost(bc_type(3), Q(:,i,1),  sj_x(i,0),  sj_y(i,0),  Q(:,i,0))
-            call ghost(bc_type(4), Q(:,i,ny), sj_x(i,ny), sj_y(i,ny), Q(:,i,ny+1))
+        ! 아래 고스트 (jc=0), 위 고스트 (jc=ny+1) : 경계 j-면 fj=0, fj=ny 의 법선 사용
+        do ic = 1,nx
+            call ghost(bc_type(3), Q(:,ic,1),  sj_x(ic,0),  sj_y(ic,0),  Q(:,ic,0))
+            call ghost(bc_type(4), Q(:,ic,ny), sj_x(ic,ny), sj_y(ic,ny), Q(:,ic,ny+1))
         end do
 
     end subroutine bc
