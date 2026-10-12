@@ -11,7 +11,7 @@ rem  SRC order = dependency order
 rem  (a module must come before any file that uses it)
 rem ============================================================
 
-set SRC=euler.f90 case_setup.f90 grid.f90 flow.f90 solver.f90 monitor.f90 output.f90 main.f90
+set SRC=src/euler.f90 src/case_setup.f90 src/grid.f90 src/flow.f90 src/solver.f90 src/monitor.f90 src/output.f90 src/main.f90
 
 set FLAGS=-O0 -g -Wall -fcheck=all -fbacktrace
 set OMP=

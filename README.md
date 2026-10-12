@@ -52,7 +52,7 @@ $state-freestream = 1.0  0.7287  0.0320  0.7142857142857143    # rho u v p
 $initial  = freestream
 ```
 Nondimensionalization: ρ = 1, p = 1/γ → speed of sound 1, so `u = M cos α`, `v = M sin α`.
-All keys are listed at the top of [case_setup.f90](case_setup.f90).
+All keys are listed at the top of [src/case_setup.f90](src/case_setup.f90).
 
 ## Example: Sod shock tube
 
@@ -88,11 +88,11 @@ RAE 2822, M 0.7294, α 2.516° — Euler vs. Airbus pETW experiment ([NWTF](http
 
 Sod shock tube, 100 cells — primitive vs. characteristic reconstruction.
 
-![Sod](docs/images/sod_contact_shock.png)
+![Sod](docs/images/sod_shock_tube.png)
 
 Diamond airfoil, M 2.0, α 2° — vs. shock-expansion theory.
 
-![Diamond airfoil](docs/images/diamond_airfoil.png)
+![Diamond airfoil](docs/images/diamond_airfoil_roe_rk3.png)
 
 Underexpanded planar jet in supersonic coflow.
 
