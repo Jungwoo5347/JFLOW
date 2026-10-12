@@ -3,7 +3,7 @@
 2D compressible Euler solver — cell-centered finite volume on structured curvilinear grids, written in Fortran.
 Reads PLOT3D grids (e.g. from Pointwise).
 
-![RAE 2822](docs/images/rae2822_cp.png)
+![RAE 2822](docs/images/rae2822_euler_vs_exp.png)
 
 ## Features
 
