@@ -1,10 +1,9 @@
 module solver
     use euler
     use grid
+    use case_setup, only: cfl                              ! CFL 수 (입력 파일 &control 에서)
 
     implicit none
-
-    real(dp), parameter :: cfl = 0.4_dp                    ! CFL 수 (1차 + 오일러 전진은 0.5 이하)
 
     real(dp), allocatable :: fluxi(:,:,:), fluxj(:,:,:)    ! 면 플럭스 (작업용, residual 전용)
 
@@ -58,28 +57,41 @@ module solver
         R = 0.0_dp
 
 
+        ! OpenMP: 바깥 루프(줄)를 스레드에 나눔. F 는 스레드마다 따로 (private)
+        !   fluxi, fluxj, R 은 스레드마다 다른 위치에 쓰므로 공유해도 됨
+        !$omp parallel private(fi, fj, ic, jc, F)
+
         ! i-면 루프: fi = 면 번호 (셀 fi 와 fi+1 사이), jc = 셀 줄
+        !$omp do
         do jc = 1,ny
             do fi = 0,nx
                 call rusanov(Q(:,fi,jc),Q(:,fi+1,jc),si_x(fi,jc), si_y(fi,jc), F)
                 fluxi(:,fi,jc) = F*si_len(fi,jc)
             end do
         end do
+        !$omp end do nowait
 
         ! j-면 루프: fj = 면 번호 (셀 fj 와 fj+1 사이), ic = 셀 칸
+        !$omp do
         do fj = 0,ny
             do ic = 1,nx
                 call rusanov(Q(:,ic,fj), Q(:,ic,fj+1), sj_x(ic,fj), sj_y(ic,fj), F)
                 fluxj(:,ic,fj) = F*sj_len(ic,fj)
             end do
         end do
-                
+        !$omp end do
+        ! (여기서 모든 스레드가 기다림: R 은 fluxi, fluxj 가 전부 채워진 뒤 계산)
+
+        !$omp do
         do jc = 1, ny
             do ic = 1, nx
                 R(:,ic,jc) = -( fluxi(:,ic,jc) - fluxi(:,ic-1,jc)&
                             + fluxj(:,ic,jc) - fluxj(:,ic,jc-1) ) / area(ic,jc)
             end do
         end do
+        !$omp end do
+
+        !$omp end parallel
 
 
     end subroutine residual
@@ -98,6 +110,8 @@ module solver
 
         dt = huge(1.0_dp)
 
+        ! OpenMP: 스레드마다 자기 최솟값을 구한 뒤 마지막에 합침 (reduction)
+        !$omp parallel do private(ic, W, c, six, siy, sjx, sjy, lam_i, lam_j) reduction(min:dt)
         do jc = 1,ny
             do ic = 1,nx
                 call c2p(Q(:,ic,jc), W)
@@ -114,6 +128,7 @@ module solver
                 dt = min(dt, cfl*area(ic,jc)/(lam_i + lam_j))
             end do
         end do
+        !$omp end parallel do
 
     end subroutine compute_dt
 

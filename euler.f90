@@ -1,7 +1,7 @@
 module euler
     implicit none
     integer, parameter :: dp = kind(1.0d0)
-    real(dp), parameter :: gam = 1.4_dp
+    real(dp) :: gam = 1.4_dp                    ! 비열비 (입력 파일 &control 의 gamma 로 바뀜)
     integer, parameter :: nvar = 4
 
     contains
