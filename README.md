@@ -3,7 +3,7 @@
 2D compressible Euler solver — cell-centered finite volume on structured curvilinear grids, written in Fortran.
 Reads PLOT3D grids (e.g. from Pointwise).
 
-![RAE 2822](doc/images/rae2822_euler_vs_exp.png)
+![RAE 2822](docs/images/rae2822_euler_vs_exp.png)
 
 ## Features
 
@@ -88,16 +88,16 @@ RAE 2822, M 0.7294, α 2.516° — Euler vs. Airbus pETW experiment ([NWTF](http
 
 Sod shock tube, 100 cells — primitive vs. characteristic reconstruction.
 
-![Sod](doc/images/sod_shock_tube.png)
+![Sod](docs/images/sod_shock_tube.png)
 
 Diamond airfoil, M 2.0, α 2° — vs. shock-expansion theory.
 
-![Diamond airfoil](doc/images/diamond_airfoil_roe_rk3.png)
+![Diamond airfoil](docs/images/diamond_airfoil_roe_rk3.png)
 
 Underexpanded planar jet in supersonic coflow.
 
-![Jet](doc/images/underexpanded_jet.png)
+![Jet](docs/images/underexpanded_jet.png)
 
 Convergence with global vs. local time step.
 
-![Local time step](doc/images/local_time_step.png)
+![Local time step](docs/images/local_time_step.png)
