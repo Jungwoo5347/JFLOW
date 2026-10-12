@@ -198,7 +198,10 @@ module flow
     !>     벽/대칭 : m 번째 내부 셀을 거울 반사 (경계 면 법선 기준)
     !>     cut     : 짝 면 건너편의 m 번째 내부 셀
     !>     출구    : 모든 층에 경계에 붙은 내부 셀 (기울기 0 외삽)
+    !>     원방    : 모든 층에 경계에 붙은 내부 셀로 계산한 같은 경계 상태
     !>     입구    : 모든 층에 지정 상태
+    !>   ghost() 에 넘기는 법선 (fnx, fny) 은 항상 영역 바깥을 향함
+    !>     (격자 법선은 +i, +j 방향이라 imin, jmin 에서는 부호를 뒤집어 넘김)
     subroutine bc()
         integer :: ic, jc, m
 
@@ -207,14 +210,14 @@ module flow
         do m = 1,ng
             ! imin, imax 고스트 : 경계 i-면 fi=0, fi=nx 의 법선 사용
             do jc = 1,ny
-                call fill(1, jc, m, si_x(0,jc),  si_y(0,jc))
-                call fill(2, jc, m, si_x(nx,jc), si_y(nx,jc))
+                call fill(1, jc, m, -si_x(0,jc), -si_y(0,jc))
+                call fill(2, jc, m,  si_x(nx,jc), si_y(nx,jc))
             end do
 
             ! jmin, jmax 고스트 : 경계 j-면 fj=0, fj=ny 의 법선 사용
             do ic = 1,nx
-                call fill(3, ic, m, sj_x(ic,0),  sj_y(ic,0))
-                call fill(4, ic, m, sj_x(ic,ny), sj_y(ic,ny))
+                call fill(3, ic, m, -sj_x(ic,0), -sj_y(ic,0))
+                call fill(4, ic, m,  sj_x(ic,ny), sj_y(ic,ny))
             end do
         end do
 
@@ -231,7 +234,7 @@ module flow
                 ! 맞닿은 짝 면 건너편의 m 번째 내부 셀 값을 그대로
                 call inner_cell(cut_side(k,side), cut_k(k,side), m, ip, jp)
                 Q(:,ig,jg) = Q(:,ip,jp)
-            case (BC_outlet)
+            case (BC_outlet, BC_farfield)
                 call inner_cell(side, k, 1, ii, ji)
                 call ghost(bc_face(k,side), W_bc(:,k,side), Q(:,ii,ji), fnx, fny, Q(:,ig,jg))
             case default
@@ -244,19 +247,59 @@ module flow
 
     !> 경계 면 하나의 고스트 셀 값
     !>   Wb  : 입구/원방 상태 (rho, u, v, p)
-    !>   qin : 경계에 붙은 내부 셀,  (fnx, fny) : 경계 면 단위 법선,  qg : 고스트 셀
+    !>   qin : 경계에 붙은 내부 셀,  (fnx, fny) : 경계 면 단위 법선 (영역 바깥 방향),  qg : 고스트 셀
     subroutine ghost(btype, Wb, qin, fnx, fny, qg)
         integer,  intent(in)  :: btype
         real(dp), intent(in)  :: Wb(nvar), qin(nvar), fnx, fny
         real(dp), intent(out) :: qg(nvar)
 
         real(dp) :: mn
+        real(dp) :: Wi(nvar), Wg(nvar)
+        real(dp) :: uni, uti, ci, si, unf, utf, cf, sf
+        real(dp) :: Rp, Rm, unb, utb, cb, sb, rhob
 
         select case (btype)
 
-        case (BC_inlet, BC_farfield)
-            ! 지정한 상태 고정 (초음속 입구 기준, 원방은 나중에 특성 조건으로 교체)
+        case (BC_inlet)
+            ! 지정한 상태 고정 (초음속 입구)
             call p2c(Wb, qg)
+
+        case (BC_farfield)
+            ! 리만 불변량 원방 조건 (n 은 바깥 방향, un > 0 이 유출)
+            !   R+ = un + 2c/(g-1) 은 속도 un + c,  R- = un - 2c/(g-1) 은 속도 un - c 로 이동
+            !   나가는 파동은 안쪽 셀(i)에서, 들어오는 파동은 자유류(f)에서 가져옴
+            !   엔트로피 s = p/rho^g 와 접선 속도는 유입이면 자유류, 유출이면 안쪽 셀
+            call c2p(qin, Wi)
+            uni =  Wi(2)*fnx + Wi(3)*fny
+            uti = -Wi(2)*fny + Wi(3)*fnx
+            ci  = sqrt(gam*Wi(4)/Wi(1))
+            si  = Wi(4)/Wi(1)**gam
+            unf =  Wb(2)*fnx + Wb(3)*fny
+            utf = -Wb(2)*fny + Wb(3)*fnx
+            cf  = sqrt(gam*Wb(4)/Wb(1))
+            sf  = Wb(4)/Wb(1)**gam
+
+            if (unf <= -cf) then
+                Wg = Wb                                    ! 초음속 유입: 모두 자유류
+            else if (uni >= ci) then
+                Wg = Wi                                    ! 초음속 유출: 모두 안쪽
+            else
+                Rp  = uni + 2.0_dp*ci/(gam - 1.0_dp)
+                Rm  = unf - 2.0_dp*cf/(gam - 1.0_dp)
+                unb = 0.5_dp*(Rp + Rm)
+                cb  = 0.25_dp*(gam - 1.0_dp)*(Rp - Rm)
+                if (unb < 0.0_dp) then
+                    sb = sf;  utb = utf
+                else
+                    sb = si;  utb = uti
+                end if
+                rhob  = (cb**2/(gam*sb))**(1.0_dp/(gam - 1.0_dp))
+                Wg(1) = rhob
+                Wg(2) = unb*fnx - utb*fny
+                Wg(3) = unb*fny + utb*fnx
+                Wg(4) = rhob*cb**2/gam
+            end if
+            call p2c(Wg, qg)
 
         case (BC_outlet)
             ! 내부 셀 그대로 복사
