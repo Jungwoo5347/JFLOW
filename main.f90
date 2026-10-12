@@ -5,12 +5,12 @@
 !>   결과를 같은 폴더에 <output>_result.dat, _line.dat, _residual.dat 로 저장
 !>   (입력 형식은 case_setup.f90 맨 위 설명)
 program main
-    use, intrinsic :: ieee_arithmetic, only: ieee_is_nan
     use grid
     use euler
     use case_setup
     use flow
     use solver
+    use monitor
     use output
     !$ use omp_lib, only: omp_get_max_threads           ! -fopenmp 로 빌드할 때만 사용
 
@@ -18,10 +18,12 @@ program main
 
     character(len=256) :: arg
     real(dp), allocatable :: R(:,:,:)
+    real(dp), allocatable :: R_temp(:,:,:)
+    real(dp), allocatable :: Q_temp(:,:,:)
+    real(dp), allocatable :: dtl(:,:)                  ! 셀마다의 dt (국소 시간 간격)
     real(dp) :: t, dt
-    real(dp) :: res(nvar), res0(nvar), res_n(nvar)     ! 잔차 L2 norm, 정규화 기준, 정규화된 값
-    integer  :: step, k, ures, nprint, ic, jc
-    logical  :: bad
+    integer  :: step, ic, jc
+    logical  :: converged
 
     ! ---- 입력 (케이스 폴더) ----
     call get_command_argument(1, arg)
@@ -49,16 +51,14 @@ program main
     end if
 
     allocate(R(nvar,0:nx+1,0:ny+1))
+    allocate(R_temp(nvar,0:nx+1,0:ny+1))
+    allocate(Q_temp, mold=Q)
+    allocate(dtl(nx,ny))
 
-    ! ---- 잔차 기록 파일 <output>_residual.dat : 매 반복 기록 (tools/plot_residual.m 으로 그림) ----
-    open(newunit=ures, file=trim(case_path(trim(output_name)//'_residual.dat')), status='replace', action='write')
-    write(ures,'(a)') '# iter  time  continuity  x-momentum  y-momentum  energy   (L2 norm / max of first 5 iters)'
-
-    ! ---- 시간 루프 (1차 오일러 전진) ----
+    ! ---- 시간 루프 ----
+    call monitor_open()
     t = 0.0_dp
     step = 0
-    nprint = 0
-    res0 = 0.0_dp
     do
         if (steady) then
             if (step >= max_steps) exit
@@ -67,62 +67,50 @@ program main
         end if
 
         call bc()                       ! 고스트 셀 채우기
-        call compute_dt(Q, dt)
+        call compute_dt(Q, dtl, dt)
         if (.not. steady) dt = min(dt, t_end - t)    ! 마지막 스텝은 t_end에 정확히 맞춤
+        ! 국소 시간 간격은 정상 문제에서만 (셀마다 자기 dt 로 전진 -> 시간은 의미 없음, 수렴만 빨라짐)
+        !   비정상 문제나 local_dt = 0 이면 모든 셀이 같은 dt (최솟값)
+        if (.not. (steady .and. local_dt)) dtl = dt
         call residual(Q, R)
 
-        ! 갱신 + 잔차 제곱합 + 발산 검사를 한 루프에서 (OpenMP: 합은 reduction 으로 모음)
-        res  = 0.0_dp
-        bad  = .false.
-        !$omp parallel do private(ic) reduction(+:res) reduction(.or.:bad)
+        ! 시간 전진: SSP-Rk3
+        Q_temp = Q
+        !$omp parallel do private(ic)
         do jc = 1,ny
             do ic = 1,nx
-                Q(:,ic,jc) = Q(:,ic,jc) + dt*R(:,ic,jc)
-                res = res + R(:,ic,jc)**2
-                bad = bad .or. any(ieee_is_nan(Q(:,ic,jc))) .or. Q(1,ic,jc) <= 0.0_dp
+                Q(:,ic,jc) = Q_temp(:,ic,jc) + dtl(ic,jc)*R(:,ic,jc)
+            end do
+        end do
+        !$omp end parallel do
+        call bc()                     ! 바뀐 Q 에 맞게 고스트 셀
+        call residual(Q, R_temp)      ! R_temp = L(Q1) 또는 L(Q2)
+
+        !$omp parallel do private(ic)
+        do jc = 1,ny
+            do ic = 1,nx
+                Q(:,ic,jc) = 0.75_dp*Q_temp(:,ic,jc) + 0.25_dp*(Q(:,ic,jc)+dtl(ic,jc)*R_temp(:,ic,jc))
+            end do
+        end do
+        !$omp end parallel do
+        call bc()                     ! 바뀐 Q 에 맞게 고스트 셀
+        call residual(Q, R_temp)      ! R_temp = L(Q1) 또는 L(Q2)
+
+        !$omp parallel do private(ic)
+        do jc = 1,ny
+            do ic = 1,nx
+                Q(:,ic,jc) = 1.0_dp/3.0_dp*Q_temp(:,ic,jc) + 2.0_dp/3.0_dp*(Q(:,ic,jc)+dtl(ic,jc)*R_temp(:,ic,jc))
             end do
         end do
         !$omp end parallel do
         t = t + dt
         step = step + 1
 
-        if (bad) then
-            print '(a,i0,a,es12.4)', ' Solution blew up at step ', step, ', t = ', t
-            close(ures)
-            error stop
-        end if
-
-        ! 잔차 L2 norm (식마다):  sqrt( sum(R^2) / 셀 수 )
-        !   정규화: 처음 5번 반복 중 최댓값으로 나눔 (STAR-CCM+ 기본 방식)
-        !   처음부터 사실상 0인 식(예: 1D 문제의 y 운동량, 반올림 오차 수준)은 0으로 표시
-        !   (반올림 오차로 나누면 의미 없는 큰 값이 나오고 수렴 판정도 막힘)
-        res = sqrt(res/real(nx*ny, dp))
-        if (step <= 5) res0 = max(res0, res)
-        do k = 1,nvar
-            if (res0(k) > 1.0e-12_dp*maxval(res0)) then
-                res_n(k) = res(k)/res0(k)
-            else
-                res_n(k) = 0.0_dp
-            end if
-        end do
-
-        write(ures,'(i8,5es14.6)') step, t, res_n
-
-        if (step == 1 .or. mod(step, print_interval) == 0) then
-            if (mod(nprint, 20) == 0) then
-                print '(a)', '   Iteration        Time    Continuity    X-momentum    Y-momentum        Energy'
-            end if
-            print '(i12,es12.4,4es14.4)', step, t, res_n
-            nprint = nprint + 1
-        end if
-
-        if (steady .and. res_tol > 0.0_dp .and. step > 5 .and. maxval(res_n) < res_tol) then
-            print '(i12,es12.4,4es14.4)', step, t, res_n
-            print '(a,es9.2)', ' converged: all residuals <', res_tol
-            exit
-        end if
+        call check_solution(Q, step, t)              ! NaN, 음수 밀도면 멈춤
+        call monitor_update(step, t, R, converged)   ! 잔차 기록, 화면 출력, 수렴 판정
+        if (converged) exit
     end do
-    close(ures)
+    call monitor_close()
 
     print '(a,i8,a,es12.4)', ' done: step', step, '   t =', t
 

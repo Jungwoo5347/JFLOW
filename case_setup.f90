@@ -36,9 +36,14 @@
 !>   steady         = 1          1: 정상 (수렴할 때까지), 0: 비정상 (t_end 까지)
 !>   max_iter       = 50000      정상: 최대 반복
 !>   res_tol        = 1.0e-6     정상: 정규화 잔차 수렴 기준 (0 이하: 판정 안 함, max_iter 까지)
+!>   local_dt       = 1          정상: 1 이면 셀마다 자기 dt (국소 시간 간격, 수렴 빠름), 0 이면 전체 최솟값
 !>   t_end          = 0.2        비정상: 끝 시간
 !>   cfl            = 0.4
 !>   gamma          = 1.4
+!>   sigma          = 1          MUSCL 재구성 on/off (0: 1차, 1: 2차 이상)
+!>   kappa          = 0.3333     MUSCL kappa (-1 풍상 2차, 0 Fromm, 1/3 3차, 1 중심)
+!>   b              = 1          minmod 압축 계수, 1 <= b <= (3-kappa)/(1-kappa)  (1: 가장 안정, 클수록 날카로움)
+!>   flux           = rusanov    리만 솔버: rusanov | roe
 !>   print_interval = 10         화면 출력 간격 (잔차 파일에는 매 반복)
 !>   line_row       = 1          <output>_line.dat 으로 뽑을 셀 줄 (j 셀 번호)
 !>   state-name     = rho u v p  이름 붙인 유동 상태 (여러 개)
@@ -67,12 +72,19 @@ module case_setup
 
     ! ---- 계산 제어 (flow.in) ----
     logical,  public :: steady = .true.
+    logical,  public :: local_dt = .true.            ! 정상 문제에서 국소 시간 간격 사용
     real(dp), public :: t_end = 1.0_dp
     integer,  public :: max_steps = 100000
     real(dp), public :: res_tol = 1.0e-6_dp
     real(dp), public :: cfl = 0.4_dp
     integer,  public :: print_interval = 10
     integer,  public :: line_row = 1
+    real(dp), public :: sigma = 1.0_dp, kappa = 1.0_dp/3.0_dp, b = 4.0_dp
+
+    ! 리만 솔버 선택 (flow.in 의 flux)
+    integer, parameter, public :: FLUX_RUSANOV = 1, FLUX_ROE = 2
+    integer,           public :: flux_id   = FLUX_RUSANOV
+    character(len=16), public :: flux_name = 'rusanov'
 
     ! ---- 격자 (grid.in) ----
     character(len=16),  public :: grid_kind = 'plot3d'      ! 'plot3d' | 'cartesian'
@@ -158,11 +170,25 @@ contains
         call load_kv(fname)
 
         steady         = get_int('steady', 1) /= 0
+        local_dt       = get_int('local_dt', 1) /= 0
         max_steps      = get_int('max_iter', max_steps)
         res_tol        = get_real('res_tol', res_tol)
         t_end          = get_real('t_end', t_end)
         cfl            = get_real('cfl', cfl)
         gam            = get_real('gamma', gam)
+        sigma          = get_real('sigma', sigma)
+        kappa          = get_real('kappa', kappa)
+        b              = get_real('b', b)
+        flux_name      = lower(adjustl(get_str('flux', flux_name)))
+        select case (flux_name)
+        case ('rusanov');  flux_id = FLUX_RUSANOV
+        case ('roe');      flux_id = FLUX_ROE
+        case default;      call fail_kv('flux = '//trim(flux_name)//' : unknown (use rusanov or roe)')
+        end select
+        if (b < 1.0_dp) call fail_kv('b must be >= 1')
+        if (kappa < 1.0_dp) then
+            if (b > (3.0_dp - kappa)/(1.0_dp - kappa) + 1.0e-12_dp) call fail_kv('b must be <= (3-kappa)/(1-kappa)')
+        end if
         print_interval = get_int('print_interval', print_interval)
         line_row       = get_int('line_row', line_row)
         if (cfl <= 0) call fail_kv('cfl must be > 0')
@@ -311,10 +337,13 @@ contains
             else
                 write(*,'(a,i0)') '  steady   : res_tol = off (run to max_iter),  max_iter = ', max_steps
             end if
+            write(*,'(a,a)') '  time step: ', merge('local (each cell its own dt)', 'global (min dt)             ', local_dt)
         else
             write(*,'(a,es12.4)')     '  unsteady : t_end = ', t_end
         end if
         write(*,'(a,f6.3,a,f6.3)')    '  CFL      : ', cfl, '    gamma = ', gam
+        write(*,'(a,f6.3,a,f7.4,a,f6.3)') '  MUSCL    : sigma = ', sigma, '    kappa = ', kappa, '    b = ', b
+        write(*,'(a,a)')              '  flux     : ', trim(flux_name)
         write(*,'(a)') '  states   :         rho           u           v           p'
         do k = 1,nstates
             write(*,'(4x,a12,4es12.4)') states(k)%name, states(k)%W

@@ -7,7 +7,7 @@ module flow
     real(dp), allocatable :: Q(:,:,:)
 
     ! 경계조건은 경계 면 하나하나마다 따로 저장 (한 변을 여러 구간으로 나눌 수 있게)
-    !   side : 1 = imin (고스트 ic=0), 2 = imax (ic=nx+1), 3 = jmin (jc=0), 4 = jmax (jc=ny+1)
+    !   side : 1 = imin (고스트 ic=0,-1..), 2 = imax (ic=nx+1,nx+2..), 3 = jmin (jc=0,-1..), 4 = jmax (jc=ny+1,ny+2..)
     !   k    : 그 변 위의 면 번호.  imin/imax 는 k = jc (1:ny),  jmin/jmax 는 k = ic (1:nx)
     !          면 k 는 (1부터 센) 노드 k 와 k+1 사이
     !   bc_face(k, side) : 경계조건 코드 (case_setup 의 BC_...)
@@ -26,7 +26,7 @@ module flow
         integer :: ic, jc, r
         real(dp) :: W(nvar)
 
-        allocate(Q(nvar,0:nx+1,0:ny+1))
+        allocate(Q(nvar,1-ng:nx+ng,1-ng:ny+ng))
         Q = 0.0_dp                       ! 고스트(모서리 포함)에 쓰레기값이 남지 않게
 
         do jc = 1,ny
@@ -65,17 +65,30 @@ module flow
         end if
     end function nface
 
-    !> 경계 면 (side, k) 에 붙은 내부 셀
-    subroutine inner_cell(side, k, ic, jc)
-        integer, intent(in)  :: side, k
+    !> 경계 면 (side, k) 에서 안쪽으로 m 번째 내부 셀 (m = 1 이 경계에 붙은 셀)
+    !>   격자가 m 칸보다 얇으면 가장 안쪽 셀 (예: Sod 처럼 한 방향 셀이 1 개)
+    subroutine inner_cell(side, k, m, ic, jc)
+        integer, intent(in)  :: side, k, m
         integer, intent(out) :: ic, jc
         select case (side)
-        case (1);  ic = 1;   jc = k
-        case (2);  ic = nx;  jc = k
-        case (3);  ic = k;   jc = 1
-        case default;  ic = k;   jc = ny
+        case (1);  ic = min(m, nx);       jc = k
+        case (2);  ic = max(nx+1-m, 1);   jc = k
+        case (3);  ic = k;   jc = min(m, ny)
+        case default;  ic = k;   jc = max(ny+1-m, 1)
         end select
     end subroutine inner_cell
+
+    !> 경계 면 (side, k) 에서 바깥으로 m 번째 고스트 셀 (m = 1 이 경계에 붙은 고스트)
+    subroutine ghost_cell(side, k, m, ic, jc)
+        integer, intent(in)  :: side, k, m
+        integer, intent(out) :: ic, jc
+        select case (side)
+        case (1);  ic = 1-m;    jc = k
+        case (2);  ic = nx+m;   jc = k
+        case (3);  ic = k;   jc = 1-m
+        case default;  ic = k;   jc = ny+m
+        end select
+    end subroutine ghost_cell
 
     !> 경계 면 (side, k) 의 양 끝 노드 좌표
     subroutine face_ends(side, k, xa, ya, xb, yb)
@@ -181,38 +194,50 @@ module flow
     end function report_faces
 
     !> 고스트 셀 채우기 (매 스텝, 잔차 계산 전에 호출)
+    !>   경계 면마다 고스트 ng 층을 채움. m 번째 고스트는 경계를 사이에 두고 m 번째 내부 셀과 마주봄
+    !>     벽/대칭 : m 번째 내부 셀을 거울 반사 (경계 면 법선 기준)
+    !>     cut     : 짝 면 건너편의 m 번째 내부 셀
+    !>     출구    : 모든 층에 경계에 붙은 내부 셀 (기울기 0 외삽)
+    !>     입구    : 모든 층에 지정 상태
     subroutine bc()
-        integer :: ic,jc
+        integer :: ic, jc, m
 
         call alloc_bc()
 
-        ! imin 고스트 (ic=0), imax 고스트 (ic=nx+1) : 경계 i-면 fi=0, fi=nx 의 법선 사용
-        do jc = 1,ny
-            call fill(1, jc, 0,    jc, si_x(0,jc),  si_y(0,jc))
-            call fill(2, jc, nx+1, jc, si_x(nx,jc), si_y(nx,jc))
-        end do
+        do m = 1,ng
+            ! imin, imax 고스트 : 경계 i-면 fi=0, fi=nx 의 법선 사용
+            do jc = 1,ny
+                call fill(1, jc, m, si_x(0,jc),  si_y(0,jc))
+                call fill(2, jc, m, si_x(nx,jc), si_y(nx,jc))
+            end do
 
-        ! jmin 고스트 (jc=0), jmax 고스트 (jc=ny+1) : 경계 j-면 fj=0, fj=ny 의 법선 사용
-        do ic = 1,nx
-            call fill(3, ic, ic, 0,    sj_x(ic,0),  sj_y(ic,0))
-            call fill(4, ic, ic, ny+1, sj_x(ic,ny), sj_y(ic,ny))
+            ! jmin, jmax 고스트 : 경계 j-면 fj=0, fj=ny 의 법선 사용
+            do ic = 1,nx
+                call fill(3, ic, m, sj_x(ic,0),  sj_y(ic,0))
+                call fill(4, ic, m, sj_x(ic,ny), sj_y(ic,ny))
+            end do
         end do
 
     contains
 
-        !> 경계 면 (side, k) 의 고스트 셀 (ig, jg) 채우기
-        subroutine fill(side, k, ig, jg, fnx, fny)
-            integer,  intent(in) :: side, k, ig, jg
+        !> 경계 면 (side, k) 의 m 번째 고스트 셀 채우기
+        subroutine fill(side, k, m, fnx, fny)
+            integer,  intent(in) :: side, k, m
             real(dp), intent(in) :: fnx, fny
-            integer :: ii, ji, ip, jp
-            if (bc_face(k,side) == BC_cut) then
-                ! 맞닿은 짝 면 건너편의 내부 셀 값을 그대로
-                call inner_cell(cut_side(k,side), cut_k(k,side), ip, jp)
+            integer :: ig, jg, ii, ji, ip, jp
+            call ghost_cell(side, k, m, ig, jg)
+            select case (bc_face(k,side))
+            case (BC_cut)
+                ! 맞닿은 짝 면 건너편의 m 번째 내부 셀 값을 그대로
+                call inner_cell(cut_side(k,side), cut_k(k,side), m, ip, jp)
                 Q(:,ig,jg) = Q(:,ip,jp)
-            else
-                call inner_cell(side, k, ii, ji)
+            case (BC_outlet)
+                call inner_cell(side, k, 1, ii, ji)
                 call ghost(bc_face(k,side), W_bc(:,k,side), Q(:,ii,ji), fnx, fny, Q(:,ig,jg))
-            end if
+            case default
+                call inner_cell(side, k, m, ii, ji)
+                call ghost(bc_face(k,side), W_bc(:,k,side), Q(:,ii,ji), fnx, fny, Q(:,ig,jg))
+            end select
         end subroutine fill
 
     end subroutine bc

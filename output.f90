@@ -10,7 +10,7 @@ module output
     !>   곡선 격자도 그대로 그려짐
     subroutine write_tecplot(fname, Q, t)
         character(len=*), intent(in) :: fname
-        real(dp), intent(in) :: Q(:,0:,0:)
+        real(dp), intent(in) :: Q(:,1-ng:,1-ng:)
         real(dp), intent(in) :: t
 
         integer  :: u, in, jn, ic, jc, k
@@ -56,7 +56,7 @@ module output
     !> 셀 줄 jc 하나를 따라 xc, rho, u, v, p 출력 (1D 그래프용)
     subroutine write_line(fname, Q, jc)
         character(len=*), intent(in) :: fname
-        real(dp), intent(in) :: Q(:,0:,0:)
+        real(dp), intent(in) :: Q(:,1-ng:,1-ng:)
         integer,  intent(in) :: jc
 
         integer  :: u, ic

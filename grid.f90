@@ -4,10 +4,14 @@ module grid
     
 
     ! 인덱스 이름 규칙
-    !   셀   : ic, jc   (내부 1:nx, 1:ny / 고스트 0, nx+1, 0, ny+1)
+    !   셀   : ic, jc   (내부 1:nx, 1:ny / 고스트 ng 층: 1-ng:0, nx+1:nx+ng, 1-ng:0, ny+1:ny+ng)
     !   노드 : in, jn   (0:nx, 0:ny)
     !   면   : fi       (i-면 번호 0:nx, 셀 fi 와 fi+1 사이)
     !          fj       (j-면 번호 0:ny, 셀 fj 와 fj+1 사이)
+
+    ! 고스트 셀 층 수: 면 하나에 양쪽 2 셀씩 (fi-1, fi | fi+1, fi+2) 쓰는 MUSCL 까지 되도록 2
+    !   Q 는 Q(nvar, 1-ng:nx+ng, 1-ng:ny+ng),  모서리 고스트 (i, j 둘 다 바깥) 는 안 씀
+    integer, parameter :: ng = 2
 
     integer  :: nx, ny                          ! 셀 개수
     real(dp) :: xmin, xmax, ymin, ymax
