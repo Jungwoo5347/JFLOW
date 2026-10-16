@@ -1,17 +1,18 @@
 # JFLOW
 
-2D compressible Euler solver — cell-centered finite volume on structured curvilinear grids, written in Fortran.
+2D and 3D compressible Euler solvers — cell-centered finite volume on structured curvilinear grids, written in Fortran.
 Reads PLOT3D grids (e.g. from Pointwise).
 
 ![RAE 2822](docs/images/rae2822_euler_vs_exp.png)
 
 ## Features
 
-- Riemann solvers: Rusanov, Roe
+- Riemann solvers: Rusanov, Roe (Harten entropy fix in 3D)
 - MUSCL (κ-scheme, minmod) with characteristic-variable reconstruction
-- SSP-RK3 time integration, local time stepping for steady flows
+- SSP-RK3 time integration, local time stepping for steady flows; implicit LU-SGS in 3D
 - BCs: slip wall, symmetry, supersonic inlet, outlet, Riemann-invariant farfield
-- Automatic C-grid wake cut / O-grid seam detection
+- Automatic C-grid wake cut / O-grid seam detection (3D: also faces between blocks)
+- 3D: multi-block grids, restart / periodic saves / STOP file, Tecplot binary (.plt) output
 - OpenMP
 
 ## Build & run
