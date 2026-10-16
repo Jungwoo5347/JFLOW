@@ -82,6 +82,44 @@ $initial  = right
 $region-1 = left  *  0.5  *  *
 ```
 
+## 3D solver
+
+A 3D version lives in [src3d/](src3d/) next to the unchanged 2D code: same scheme
+(MUSCL + Rusanov/Roe + SSP-RK3, local time stepping), same BCs and input format.
+
+```
+build.bat 3d release omp
+.\main3d.exe cases3d\sod
+```
+
+Differences from 2D input:
+
+- `grid.in`: `$dim = 3`; faces 1–6 (`5 kmin`, `6 kmax`); a BC range is four node numbers
+  `a1 a2 b1 b2` along the face (faces 1,2: j k / 3,4: i k / 5,6: i j);
+  `cartesian ni nj nk xmin xmax ymin ymax zmin zmax`
+- `$extrude-1 = nk span` turns a 2D PLOT3D file into a 3D grid (use `300` on faces 5, 6 for a quasi-2D run)
+- `flow.in`: states are `rho u v w p`; regions are `name x0 x1 y0 y1 z0 z1`; `$line_k` picks the k index of the line output
+
+Output `<output>_result.dat` is a Tecplot I-J-K zone (x y z + rho u v w p Mach, cell-centered).
+`cases3d/` holds the Sod tube and the NACA 0012 extruded case, both of which reproduce the 2D results.
+
+### ONERA M6 wing
+
+M 0.8395, α 3.06°, Euler — 151×101×121 C-O grid (1.8 M cells), Roe + MUSCL (b = 4), 20000 iterations.
+The lambda shock on the upper surface is captured; section Cp vs. Schmitt & Charpin (AGARD AR-138).
+
+![ONERA M6 surface Cp](docs/images/onera_m6_cp_contour.png)
+
+![ONERA M6 section Cp](docs/images/onera_m6_cp.png)
+
+| | C_L | C_D |
+|---|---|---|
+| JFLOW3D (surface pressure integral) | 0.2801 | 0.01094 |
+| SU2 Euler (JST, 108k nodes, regression test value) | 0.2808 | 0.00862 |
+| Experiment (7 sections, integrated Cp) | 0.2481 | – |
+
+Reference area: half-wing planform 0.7530 m².
+
 ## Results
 
 RAE 2822, M 0.7294, α 2.516° — Euler vs. Airbus pETW experiment ([NWTF](https://www.nwtf.ac.uk/dataset/2687/)), top figure.

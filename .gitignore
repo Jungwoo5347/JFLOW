@@ -4,6 +4,7 @@
 *.o
 *.obj
 build/
+build3d/
 
 # solver output
 *.vtk
