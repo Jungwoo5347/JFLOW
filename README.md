@@ -98,9 +98,28 @@ Differences from 2D input:
   `a1 a2 b1 b2` along the face (faces 1,2: j k / 3,4: i k / 5,6: i j);
   `cartesian ni nj nk xmin xmax ymin ymax zmin zmax`
 - `$extrude-1 = nk span` turns a 2D PLOT3D file into a 3D grid (use `300` on faces 5, 6 for a quasi-2D run)
-- `flow.in`: states are `rho u v w p`; regions are `name x0 x1 y0 y1 z0 z1`; `$line_k` picks the k index of the line output
+- `flow.in`: states are `rho u v w p`, or by Mach number and angles:
+  `$state-freestream = mach 0.8395 alpha 3.06 [beta 0] [rho 1] [p 0.714…]` (`speed V` instead of `mach`;
+  `$lift_axis = y | z` sets the axis α tilts toward); regions are `name x0 x1 y0 y1 z0 z1`; `$line_block`, `$line_k` pick the line output
 
-Output `<output>_result.dat` is a Tecplot I-J-K zone (x y z + rho u v w p Mach, cell-centered).
+Multi-block grids (point-matched): one multi-block PLOT3D file with a single `$block-1 = file` line,
+or one `$block-n = file [m]` line per block. BCs are given per block (`$bc-n-f`);
+faces between blocks are found and connected automatically, like wake cuts.
+
+Long runs:
+- `$restart = 1` continues from `<output>_restart.bin` (written at the end and every `$save_interval` iterations)
+- create a file named `STOP` in the case folder to end the run cleanly (results are saved)
+- the screen shows time per iteration and time left
+
+Time integration: `$time_scheme = explicit` (SSP-RK3, default) or `implicit` (LU-SGS, steady only).
+LU-SGS works best with `$cfl = 5–10` (≈5× faster than explicit to 1e-4 on the extruded NACA 0012 case);
+`$lusgs_omega` (default 1) adds diagonal dominance.
+
+Roe entropy fix (Harten): `$entropy_fix = 0.1` (δ = 0.1 c̃, default 0 = off),
+`$entropy_fix_waves = acoustic | all` (u ± c only, or also u for stagnation points).
+
+Output `<output>_result.plt` (Tecplot binary, one zone per block: x y z + rho u v w p Mach, cell-centered);
+`$output_format = ascii | both` for `.dat`. `tools/read_jflow3d.m` reads either in MATLAB.
 `cases3d/` holds the Sod tube and the NACA 0012 extruded case, both of which reproduce the 2D results.
 
 ### ONERA M6 wing

@@ -1,41 +1,42 @@
 module solver
     use euler
     use grid
-    use case_setup, only: cfl,sigma,kappa,b, flux_id, FLUX_RUSANOV, FLUX_ROE
+    use case_setup, only: cfl,sigma,kappa,b, flux_id, FLUX_RUSANOV, FLUX_ROE, entropy_fix, entropy_fix_all
 
     implicit none
 
-    real(dp), allocatable :: fluxi(:,:,:,:), fluxj(:,:,:,:), fluxk(:,:,:,:)    ! 면 플럭스 (작업용, residual 전용)
+    ! 면 플럭스 작업 버퍼 (residual 전용): i, j, k 방향을 차례로 같은 버퍼에 담음 (모든 블록이 같이 씀)
+    real(dp), allocatable, target :: fbuf(:)
 
     contains
 
-    !> 면 법선 n 방향 물리 플럭스 F(Q).n
-    pure subroutine flux_n(Qc, W, n, F)
-        real(dp), intent(in)  :: Qc(nvar), W(nvar), n(3)
+    !> 면 법선 n 방향 물리 플럭스 F(W).n   (W = rho, u, v, w, p)
+    pure subroutine flux_n(W, n, F)
+        real(dp), intent(in)  :: W(nvar), n(3)
         real(dp), intent(out) :: F(nvar)
         real(dp) :: un
 
         un = W(2)*n(1) + W(3)*n(2) + W(4)*n(3)
         F(1)   = W(1)*un
         F(2:4) = W(1)*W(2:4)*un + W(5)*n
-        F(5)   = (Qc(5) + W(5))*un
+        F(5)   = (gam/(gam - 1.0_dp)*W(5) + 0.5_dp*W(1)*(W(2)**2 + W(3)**2 + W(4)**2))*un    ! (E + p) un
     end subroutine flux_n
 
-    subroutine rusanov(QL,QR,n,F)
+    subroutine rusanov(WL,WR,n,F)
 
-        real(dp), intent(in)  :: QL(nvar), QR(nvar)
+        real(dp), intent(in)  :: WL(nvar), WR(nvar)
         real(dp), intent(in)  :: n(3)
         real(dp), intent(out) :: F(nvar)
 
-        real(dp) :: l_max, WL(nvar), WR(nvar), FL(nvar), FR(nvar), cL, cR
+        real(dp) :: l_max, QL(nvar), QR(nvar), FL(nvar), FR(nvar), cL, cR
 
-        call c2p(QL,WL)
-        call c2p(QR,WR)
         call sos(WL, cL)
         call sos(WR, cR)
+        call p2c(WL, QL)
+        call p2c(WR, QR)
 
-        call flux_n(QL, WL, n, FL)
-        call flux_n(QR, WR, n, FR)
+        call flux_n(WL, n, FL)
+        call flux_n(WR, n, FR)
 
         l_max = max(abs(dot_product(WL(2:4),n))+cL, abs(dot_product(WR(2:4),n))+cR)
 
@@ -60,20 +61,15 @@ module solver
         t2 = cross(n, t1)
     end subroutine tangents
 
-    !> MUSCL 재구성 (특성 변수), 인자 순서: 가운데 Q (면 왼쪽), 그 왼쪽 Qm1, 면 오른쪽 Q1, 그 오른쪽 Q2
-    subroutine MUSCL(Q,Qm1,Q1,Q2,n,QL,QR)
-        real(dp), intent(in) :: Q(:),Qm1(:),Q1(:),Q2(:),n(3)
-        real(dp), intent(out) :: QL(:), QR(:)
+    !> MUSCL 재구성 (특성 변수), 원시 변수로 받고 원시 변수로 돌려줌
+    !>   인자 순서: 가운데 W (면 왼쪽), 그 왼쪽 Wm1, 면 오른쪽 W1, 그 오른쪽 W2  ->  면 양쪽 값 WL, WR
+    subroutine MUSCL(W,Wm1,W1,W2,n,WL,WR)
+        real(dp), intent(in)  :: W(:),Wm1(:),W1(:),W2(:),n(3)
+        real(dp), intent(out) :: WL(:), WR(:)
 
-        real(dp) :: W(nvar), Wm1(nvar), W1(nvar), W2(nvar),WL(nvar),WR(nvar)
         real(dp) :: deltaWmh(nvar),deltaWph(nvar),deltaWpph(nvar)
         real(dp) :: am(nvar), a0(nvar), ap(nvar), sL(nvar), sR(nvar), dL(nvar), dR(nvar)
         real(dp) :: rhof, cf, c0, c1, t1(3), t2(3)
-
-        call c2p(Q,W)
-        call c2p(Qm1,Wm1)
-        call c2p(Q1,W1)
-        call c2p(Q2,W2)
 
         !delta 계산
         deltaWmh  = W  - Wm1
@@ -103,9 +99,6 @@ module solver
             WL = W
             WR = W1
         end if
-
-        call p2c(WL,QL)
-        call p2c(WR,QR)
 
     end subroutine MUSCL
 
@@ -138,22 +131,21 @@ module solver
 
     end subroutine from_char
 
-    !> Roe 플럭스 (3D)
+    !> Roe 플럭스 (3D), 면 양쪽 원시 변수 WL, WR
     !>   전단파 두 개는 접선 기저 없이 한 번에:  rho~ (du - n dun) 로 씀 (2D 의 a3 r3 와 같은 것)
-    subroutine Roe(QL,QR,n,F)
-        real(dp), intent(in) :: QL(:), QR(:), n(3)
+    subroutine Roe(WL,WR,n,F)
+        real(dp), intent(in) :: WL(:), WR(:), n(3)
         real(dp), intent(out) :: F(:)
 
-        real(dp) :: WL(nvar), WR(nvar), FL(nvar), FR(nvar)
+        real(dp) :: FL(nvar), FR(nvar)
         real(dp) :: rho_tild, vel_tild(3), H_tild, c_tild, q2_tild, Rw, HL, HR, unL, unR, un_tild
         real(dp) :: dp_, drho, du(3), dun, dut(3)
         real(dp) :: a1, a2, a5, l1, l2, l5, r1(nvar), r2(nvar), r5(nvar), rs(nvar)
+        real(dp) :: al1, al2, al5, delta
 
-        call c2p(QL,WL)
-        call c2p(QR,WR)
-
-        HL = (QL(5) + WL(5))/WL(1)
-        HR = (QR(5) + WR(5))/WR(1)
+        ! 전 엔탈피 H = (E + p)/rho = g/(g-1) p/rho + |u|^2/2
+        HL = gam/(gam - 1.0_dp)*WL(5)/WL(1) + 0.5_dp*(WL(2)**2 + WL(3)**2 + WL(4)**2)
+        HR = gam/(gam - 1.0_dp)*WR(5)/WR(1) + 0.5_dp*(WR(2)**2 + WR(3)**2 + WR(4)**2)
 
         ! Roe 평균
         Rw = sqrt(WR(1)/WL(1))
@@ -182,27 +174,37 @@ module solver
         l2 = un_tild
         l5 = un_tild+c_tild
 
+        ! 고유값 절댓값 (소산 크기). 엔트로피 보정 (Harten): |lam| < delta 이면 (lam^2 + delta^2)/(2 delta) 로
+        !   0 근처에서 소산이 사라지지 않게 함. 음속점 (un -+ c = 0) 의 팽창 충격파 방지, all 이면 정체점 (un = 0) 도
+        al1 = abs(l1);  al2 = abs(l2);  al5 = abs(l5)
+        if (entropy_fix > 0.0_dp) then
+            delta = entropy_fix*c_tild
+            if (al1 < delta) al1 = (l1**2 + delta**2)/(2.0_dp*delta)
+            if (al5 < delta) al5 = (l5**2 + delta**2)/(2.0_dp*delta)
+            if (entropy_fix_all .and. al2 < delta) al2 = (l2**2 + delta**2)/(2.0_dp*delta)
+        end if
+
         r1(1) = 1; r1(2:4) = vel_tild - c_tild*n; r1(5) = H_tild - c_tild*un_tild
         r2(1) = 1; r2(2:4) = vel_tild;            r2(5) = 0.5_dp*q2_tild
         r5(1) = 1; r5(2:4) = vel_tild + c_tild*n; r5(5) = H_tild + c_tild*un_tild
         rs(1) = 0; rs(2:4) = rho_tild*dut;        rs(5) = rho_tild*dot_product(vel_tild, dut)
 
-        call flux_n(QL, WL, n, FL)
-        call flux_n(QR, WR, n, FR)
+        call flux_n(WL, n, FL)
+        call flux_n(WR, n, FR)
 
-        F = 0.5_dp*(FL+FR) - 0.5_dp*(abs(l1)*a1*r1 + abs(l2)*(a2*r2 + rs) + abs(l5)*a5*r5)
+        F = 0.5_dp*(FL+FR) - 0.5_dp*(al1*a1*r1 + al2*(a2*r2 + rs) + al5*a5*r5)
 
     end subroutine Roe
 
-    !> 리만 솔버 고르기 (flow.in 의 flux = rusanov | roe)
-    subroutine riemann(QL, QR, n, F)
-        real(dp), intent(in)  :: QL(nvar), QR(nvar), n(3)
+    !> 리만 솔버 고르기 (flow.in 의 flux = rusanov | roe), 면 양쪽 원시 변수
+    subroutine riemann(WL, WR, n, F)
+        real(dp), intent(in)  :: WL(nvar), WR(nvar), n(3)
         real(dp), intent(out) :: F(nvar)
         select case (flux_id)
         case (FLUX_ROE)
-            call Roe(QL, QR, n, F)
+            call Roe(WL, WR, n, F)
         case default
-            call rusanov(QL, QR, n, F)
+            call rusanov(WL, WR, n, F)
         end select
     end subroutine riemann
 
@@ -218,69 +220,138 @@ module solver
         end if
     end function  minmod
 
-    subroutine residual(Q,R)
-        real(dp), intent(inout) :: Q(:,1-ng:,1-ng:,1-ng:)
-        real(dp), intent(out) :: R(nvar,nx,ny,nz)
+    !> 블록 bk 의 잔차 R = -(면 플럭스 합)/V  (고스트 셀은 bc() 로 미리 채워 둠)
+    !>   1) 원시 변수 W 를 셀마다 한 번만 계산 (내부 + 면 고스트. 모서리 고스트는 안 씀)
+    !>   2) i, j, k 방향마다 면 플럭스를 같은 버퍼에 계산 -> R 에 더함 (버퍼 하나라 메모리 1/3)
+    subroutine residual(bk, R)
+        integer,  intent(in)  :: bk
+        real(dp), intent(out) :: R(:,:,:,:)
 
-        integer :: fi, fj, fk, ic, jc, kc
-        real(dp) :: F(nvar), QL(nvar), QR(nvar)
+        integer :: fi, fj, fk, ic, jc, kc, nf, bb
+        real(dp) :: F(nvar), WL(nvar), WR(nvar)
+        real(dp), pointer, contiguous :: fl(:,:,:,:), Q(:,:,:,:), W(:,:,:,:)
 
-        if (.not. allocated(fluxi)) then
-            allocate(fluxi(nvar,0:nx,ny,nz), fluxj(nvar,nx,0:ny,nz), fluxk(nvar,nx,ny,0:nz))
+        call use_block(bk)
+        Q => blk(bk)%Q
+        if (.not. allocated(blk(bk)%W)) allocate(blk(bk)%W, mold=blk(bk)%Q)
+        if (.not. allocated(fbuf)) then
+            nf = 0
+            do bb = 1,nblk
+                associate (m => blk(bb))
+                    nf = max(nf, (m%nx+1)*m%ny*m%nz, m%nx*(m%ny+1)*m%nz, m%nx*m%ny*(m%nz+1))
+                end associate
+            end do
+            allocate(fbuf(nvar*nf))
         end if
 
+        W => blk(bk)%W
+
         ! OpenMP: 바깥 두 루프를 묶어 스레드에 나눔 (collapse(2): 한 방향 셀이 적어도 고르게 나뉨)
-        !   F, QL, QR 은 스레드마다 따로 (private). fluxi/j/k, R 은 스레드마다 다른 위치에 씀
-        !$omp parallel private(fi, fj, fk, ic, jc, kc, F, QL, QR)
+        !   F, WL, WR 은 스레드마다 따로 (private). 버퍼, R 은 스레드마다 다른 위치에 씀
+        !$omp parallel private(fi, fj, fk, ic, jc, kc, F, WL, WR)
 
-        ! i-면: fi = 면 번호 (셀 fi 와 fi+1 사이)
-        !   MUSCL 인자 순서: 가운데(fi), 왼쪽(fi-1), 오른쪽(fi+1), 그 오른쪽(fi+2)
+        ! ---- 원시 변수: 내부 셀, 그리고 i / j / k 방향 고스트 (각 방향 면 루프가 쓰는 것만) ----
         !$omp do collapse(2)
         do kc = 1,nz
             do jc = 1,ny
-                do fi = 0,nx
-                    call MUSCL(Q(:,fi,jc,kc), Q(:,fi-1,jc,kc), Q(:,fi+1,jc,kc), Q(:,fi+2,jc,kc), si(:,fi,jc,kc), QL, QR)
-                    call riemann(QL, QR, si(:,fi,jc,kc), F)
-                    fluxi(:,fi,jc,kc) = F*si_a(fi,jc,kc)
+                do ic = 1-ng,nx+ng
+                    call c2p(Q(:,ic,jc,kc), W(:,ic,jc,kc))
                 end do
             end do
         end do
         !$omp end do nowait
-
-        ! j-면
         !$omp do collapse(2)
         do kc = 1,nz
-            do fj = 0,ny
-                do ic = 1,nx
-                    call MUSCL(Q(:,ic,fj,kc), Q(:,ic,fj-1,kc), Q(:,ic,fj+1,kc), Q(:,ic,fj+2,kc), sj(:,ic,fj,kc), QL, QR)
-                    call riemann(QL, QR, sj(:,ic,fj,kc), F)
-                    fluxj(:,ic,fj,kc) = F*sj_a(ic,fj,kc)
+            do ic = 1,nx
+                do jc = 1-ng,0
+                    call c2p(Q(:,ic,jc,kc), W(:,ic,jc,kc))
+                    call c2p(Q(:,ic,ny+ng+jc,kc), W(:,ic,ny+ng+jc,kc))
                 end do
             end do
         end do
         !$omp end do nowait
-
-        ! k-면
         !$omp do collapse(2)
-        do fk = 0,nz
-            do jc = 1,ny
-                do ic = 1,nx
-                    call MUSCL(Q(:,ic,jc,fk), Q(:,ic,jc,fk-1), Q(:,ic,jc,fk+1), Q(:,ic,jc,fk+2), sk(:,ic,jc,fk), QL, QR)
-                    call riemann(QL, QR, sk(:,ic,jc,fk), F)
-                    fluxk(:,ic,jc,fk) = F*sk_a(ic,jc,fk)
+        do jc = 1,ny
+            do ic = 1,nx
+                do kc = 1-ng,0
+                    call c2p(Q(:,ic,jc,kc), W(:,ic,jc,kc))
+                    call c2p(Q(:,ic,jc,nz+ng+kc), W(:,ic,jc,nz+ng+kc))
                 end do
             end do
         end do
         !$omp end do
-        ! (여기서 모든 스레드가 기다림: R 은 플럭스가 전부 채워진 뒤 계산)
 
+        ! ---- i-면: fi = 면 번호 (셀 fi 와 fi+1 사이) ----
+        !   MUSCL 인자 순서: 가운데(fi), 왼쪽(fi-1), 오른쪽(fi+1), 그 오른쪽(fi+2)
+        !$omp single
+        fl(1:nvar,0:nx,1:ny,1:nz) => fbuf(1:nvar*(nx+1)*ny*nz)
+        !$omp end single
+        !$omp do collapse(2)
+        do kc = 1,nz
+            do jc = 1,ny
+                do fi = 0,nx
+                    call MUSCL(W(:,fi,jc,kc), W(:,fi-1,jc,kc), W(:,fi+1,jc,kc), W(:,fi+2,jc,kc), si(:,fi,jc,kc), WL, WR)
+                    call riemann(WL, WR, si(:,fi,jc,kc), F)
+                    fl(:,fi,jc,kc) = F*si_a(fi,jc,kc)
+                end do
+            end do
+        end do
+        !$omp end do
         !$omp do collapse(2)
         do kc = 1,nz
             do jc = 1,ny
                 do ic = 1,nx
-                    R(:,ic,jc,kc) = -( fluxi(:,ic,jc,kc) - fluxi(:,ic-1,jc,kc) &
-                                     + fluxj(:,ic,jc,kc) - fluxj(:,ic,jc-1,kc) &
-                                     + fluxk(:,ic,jc,kc) - fluxk(:,ic,jc,kc-1) ) / vol(ic,jc,kc)
+                    R(:,ic,jc,kc) = fl(:,ic,jc,kc) - fl(:,ic-1,jc,kc)
+                end do
+            end do
+        end do
+        !$omp end do
+
+        ! ---- j-면 ----
+        !$omp single
+        fl(1:nvar,1:nx,0:ny,1:nz) => fbuf(1:nvar*nx*(ny+1)*nz)
+        !$omp end single
+        !$omp do collapse(2)
+        do kc = 1,nz
+            do fj = 0,ny
+                do ic = 1,nx
+                    call MUSCL(W(:,ic,fj,kc), W(:,ic,fj-1,kc), W(:,ic,fj+1,kc), W(:,ic,fj+2,kc), sj(:,ic,fj,kc), WL, WR)
+                    call riemann(WL, WR, sj(:,ic,fj,kc), F)
+                    fl(:,ic,fj,kc) = F*sj_a(ic,fj,kc)
+                end do
+            end do
+        end do
+        !$omp end do
+        !$omp do collapse(2)
+        do kc = 1,nz
+            do jc = 1,ny
+                do ic = 1,nx
+                    R(:,ic,jc,kc) = R(:,ic,jc,kc) + (fl(:,ic,jc,kc) - fl(:,ic,jc-1,kc))
+                end do
+            end do
+        end do
+        !$omp end do
+
+        ! ---- k-면, 그리고 R = -(합)/V ----
+        !$omp single
+        fl(1:nvar,1:nx,1:ny,0:nz) => fbuf(1:nvar*nx*ny*(nz+1))
+        !$omp end single
+        !$omp do collapse(2)
+        do fk = 0,nz
+            do jc = 1,ny
+                do ic = 1,nx
+                    call MUSCL(W(:,ic,jc,fk), W(:,ic,jc,fk-1), W(:,ic,jc,fk+1), W(:,ic,jc,fk+2), sk(:,ic,jc,fk), WL, WR)
+                    call riemann(WL, WR, sk(:,ic,jc,fk), F)
+                    fl(:,ic,jc,fk) = F*sk_a(ic,jc,fk)
+                end do
+            end do
+        end do
+        !$omp end do
+        !$omp do collapse(2)
+        do kc = 1,nz
+            do jc = 1,ny
+                do ic = 1,nx
+                    R(:,ic,jc,kc) = -(R(:,ic,jc,kc) + (fl(:,ic,jc,kc) - fl(:,ic,jc,kc-1))) / vol(ic,jc,kc)
                 end do
             end do
         end do
@@ -290,20 +361,23 @@ module solver
 
     end subroutine residual
 
-    !> CFL 조건으로 dt 계산
+    !> 블록 bk 의 CFL 조건 dt
     !>   셀마다 dt = cfl * V / (lam_i + lam_j + lam_k)
     !>   lam_i = |u.Si| + c|Si|,  Si = 셀 양쪽 i-면 벡터(법선 x 넓이)의 평균  (j, k 도 같음)
-    !>   dtl(ic,jc,kc) : 셀마다의 dt (정상 문제의 국소 시간 간격),  dt : 그 최솟값 (비정상 문제의 전체 dt)
-    subroutine compute_dt(Q, dtl, dt)
-        real(dp), intent(in)  :: Q(:,1-ng:,1-ng:,1-ng:)
-        real(dp), intent(out) :: dtl(:,:,:)
+    !>   blk(bk)%dtl : 셀마다의 dt (정상 문제의 국소 시간 간격),  dt : 그 최솟값
+    subroutine compute_dt(bk, dt)
+        integer,  intent(in)  :: bk
         real(dp), intent(out) :: dt
 
         integer  :: ic, jc, kc
         real(dp) :: W(nvar), c, s_i(3), s_j(3), s_k(3), lam
+        real(dp), pointer, contiguous :: Q(:,:,:,:), dtl(:,:,:)
 
+        call use_block(bk)
+        if (.not. allocated(blk(bk)%dtl)) allocate(blk(bk)%dtl(nx,ny,nz))
         dt = huge(1.0_dp)
 
+        Q => blk(bk)%Q;  dtl => blk(bk)%dtl
         !$omp parallel do collapse(2) private(ic, W, c, s_i, s_j, s_k, lam) reduction(min:dt)
         do kc = 1,nz
             do jc = 1,ny

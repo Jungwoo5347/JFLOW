@@ -14,7 +14,7 @@ rem  (a module must come before any file that uses it)
 rem ============================================================
 
 set SRC=src/euler.f90 src/case_setup.f90 src/grid.f90 src/flow.f90 src/solver.f90 src/monitor.f90 src/output.f90 src/main.f90
-set SRC3D=src3d/euler.f90 src3d/case_setup.f90 src3d/grid.f90 src3d/flow.f90 src3d/solver.f90 src3d/monitor.f90 src3d/output.f90 src3d/main.f90
+set SRC3D=src3d/euler.f90 src3d/case_setup.f90 src3d/grid.f90 src3d/flow.f90 src3d/solver.f90 src3d/implicit.f90 src3d/monitor.f90 src3d/output.f90 src3d/main.f90
 
 set FLAGS=-O0 -g -Wall -fcheck=all -fbacktrace
 set OMP=
