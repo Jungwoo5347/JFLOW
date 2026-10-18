@@ -256,7 +256,7 @@ module flow
         real(dp) :: mn
         real(dp) :: Wi(nvar), Wg(nvar)
         real(dp) :: uni, uti, ci, si, unf, utf, cf, sf
-        real(dp) :: Rp, Rm, unb, utb, cb, sb, rhob
+        real(dp) :: Rp, Rm, unb, utb, cb, sb, rhob, Tg
 
         select case (btype)
 
@@ -313,6 +313,24 @@ module flow
             qg(3) = qin(3) - 2.0_dp*mn*fny
             qg(4) = qin(4)
 
+        case (BC_wall_ad)
+            qg(1) =  qin(1)
+            qg(2) = -qin(2) 
+            qg(3) = -qin(3) 
+            qg(4) =  qin(4)        
+
+        case (BC_wall_iso)
+            
+            call c2p(qin,Wi)
+
+            Wg(2) = 2*Wb(2)-Wi(2)
+            Wg(3) = 2*Wb(3)-Wi(3)
+            Tg = 2.0_dp*temperature(Wb(1),Wb(4)) - temperature(Wi(1),Wi(4))
+            Wg(4) = Wi(4) 
+            Wg(1) = gam*Wg(4)/Tg 
+
+            call p2c(Wg, qg)
+
         case default
             write(*,*) 'Unknown BC type:', btype
             error stop
@@ -320,5 +338,10 @@ module flow
         end select
 
     end subroutine ghost
+
+    elemental real(dp) function temperature(rho, p)
+        real(dp), intent(in) :: rho, p
+        temperature = gam*p/rho
+    end function temperature
 
 end module flow

@@ -37,15 +37,44 @@
 !>   max_iter       = 50000      정상: 최대 반복
 !>   res_tol        = 1.0e-6     정상: 정규화 잔차 수렴 기준 (0 이하: 판정 안 함, max_iter 까지)
 !>   local_dt       = 1          정상: 1 이면 셀마다 자기 dt (국소 시간 간격, 수렴 빠름), 0 이면 전체 최솟값
-!>   t_end          = 0.2        비정상: 끝 시간
+!>   t_end          = 0.2        비정상: 끝 시간 (무차원. ref_length 가 있으면 초 [s])
 !>   cfl            = 0.4
 !>   gamma          = 1.4
 !>   sigma          = 1          MUSCL 재구성 on/off (0: 1차, 1: 2차 이상)
 !>   kappa          = 0.3333     MUSCL kappa (-1 풍상 2차, 0 Fromm, 1/3 3차, 1 중심)
 !>   b              = 1          minmod 압축 계수, 1 <= b <= (3-kappa)/(1-kappa)  (1: 가장 안정, 클수록 날카로움)
 !>   flux           = rusanov    리만 솔버: rusanov | roe
-!>   print_interval = 10         화면 출력 간격 (잔차 파일에는 매 반복)
+!>   time_scheme    = explicit   시간 적분: explicit (SSP-RK3) | implicit
+!>                                 정상 (steady = 1): LU-SGS 반복 (cfl 을 크게, 예 5 ~ 50)
+!>                                 비정상 (steady = 0): dual time stepping, 실제 시간은 BDF2 (dt 고정),
+!>                                   스텝마다 가상 시간 LU-SGS 반복 (국소 dtau, cfl 은 가상 시간용)
+!>   implicit_solver = lusgs     암시적 반복 방법 (지금은 lusgs 만)
+!>   lusgs_omega    = 1.0        LU-SGS 대각 계수 w (1 ~ 2, 클수록 안정, 수렴은 느려짐)
+!>   dt             = 0.1        dual time: 실제 시간 간격 (무차원. ref_length 가 있으면 초 [s]. 마지막 스텝만 t_end 에 맞춰 짧아짐)
+!>   inner_iter     = 30         dual time: 스텝마다 안쪽 최대 반복 수
+!>   inner_tol      = 1.0e-3     dual time: 안쪽 잔차 (L2) 가 첫 반복의 이 비율 아래로 내려가면 다음 스텝
+!>   print_interval = 10         화면 출력 간격 (잔차 파일에는 매 반복). 출력할 때 반복당 시간, 남은 시간도 표시
+!>   print_inner    = 1          dual time: print_interval 스텝 안에서 몇 안쪽 반복마다 화면에 찍을지
+!>                               (1: 전부, 10: 10, 20, ... 번째, 0: 마지막만. 마지막 안쪽 반복은 항상 찍음)
 !>   line_row       = 1          <output>_line.dat 으로 뽑을 셀 줄 (j 셀 번호)
+!>   output_format  = plt        결과 파일: plt (Tecplot 바이너리) | ascii (Tecplot .dat) | both
+!>   save_interval  = 0          N 회마다 결과와 재시작 파일 저장 (0: 끝날 때만)
+!>   save_series    = 0          1: 중간 저장 결과를 res/<output>_result_00012000.plt 처럼 케이스 폴더의 res/ 에 반복 수를 붙여 따로 저장
+!>                               (비정상 문제의 시간 이력. 재시작 파일은 하나만 덮어씀. 파일마다 solution time 이 들어가서
+!>                                Tecplot 에서 여러 파일을 함께 열면 애니메이션이 됨)
+!>   restart        = 0          1: <output>_restart.bin 에서 이어서 계산
+!>                               (반복 수와 시간은 이어서 셈: max_iter, t_end 는 전체 기준)
+!>   viscous        = 0          1: 층류 Navier-Stokes (점성항)
+!>   reynolds       = 1.0e6      Re = rho U L / mu  (U = state-freestream 의 속도, L = 격자 단위 1)
+!>   prandtl        = 0.72
+!>   viscosity_law  = sutherland 점성계수: sutherland | constant (mu* = 1)
+!>   t_inf          = 288.15     자유류 온도 [K] (Sutherland, 차원 출력용: 무차원 T = gamma p / rho = 1 인 온도)
+!>   ref_length     = 0.01       [m] 격자 길이 1 의 실제 길이. 있으면 결과 파일 (result, line) 을 SI 단위로 씀
+!>                               (x, y [m], rho [kg/m3], u, v [m/s], p [Pa], solution time [s], Mach 그대로)
+!>                               화면, 잔차 파일의 시간도 초. 입력 t_end, dt 도 초로 받음
+!>                               없으면 모두 무차원. 계산 자체와 재시작 파일은 항상 무차원
+!>                               기준 밀도: viscous = 1 이면 reynolds 로 정해짐, 아니면 p_inf 로
+!>   p_inf          = 101325     [Pa] 비점성 + ref_length 일 때 p* = 1/gamma 인 압력 (점성이면 쓰지 않음)
 !>   state-name     = rho u v p  이름 붙인 유동 상태 (여러 개)
 !>   initial        = name       초기조건 기본 상태
 !>   region-k       = name x0 x1 y0 y1    상자 x0 <= xc < x1, y0 <= yc < y1 안의 셀만 그 상태로
@@ -62,6 +91,8 @@ module case_setup
     integer, parameter, public :: BC_inlet    = 210
     integer, parameter, public :: BC_outlet   = 220
     integer, parameter, public :: BC_symmetry = 300
+    integer, parameter, public :: BC_wall_ad  = 120
+    integer, parameter, public :: BC_wall_iso = 130
     integer, parameter, public :: BC_cut      = -1      ! 내부용: 자동으로 찾은 맞닿은 면 (wake cut 등)
 
     integer, parameter, public :: max_states = 50, max_regions = 50, max_patches = 200
@@ -78,13 +109,44 @@ module case_setup
     real(dp), public :: res_tol = 1.0e-6_dp
     real(dp), public :: cfl = 0.4_dp
     integer,  public :: print_interval = 10
+    integer,  public :: print_inner = 1              ! dual time: 화면에 찍을 안쪽 반복 간격 (0: 마지막만)
     integer,  public :: line_row = 1
+    logical,  public :: restart = .false.            ! 재시작 파일에서 이어서 계산
+    logical,  public :: out_plt = .true., out_ascii = .false.   ! 결과 파일 형식 (output_format)
+    integer,  public :: save_interval = 0            ! 중간 저장 간격 (0: 끝날 때만)
+    logical,  public :: save_series = .false.        ! 중간 저장 결과를 반복 수 붙인 새 파일로 (비정상 시간 이력)
     real(dp), public :: sigma = 1.0_dp, kappa = 1.0_dp/3.0_dp, b = 4.0_dp
 
     ! 리만 솔버 선택 (flow.in 의 flux)
     integer, parameter, public :: FLUX_RUSANOV = 1, FLUX_ROE = 2
     integer,           public :: flux_id   = FLUX_RUSANOV
+
+    ! 시간 적분 (flow.in 의 time_scheme)
+    logical,           public :: implicit_ts = .false.        ! time_scheme = implicit
+    character(len=16), public :: implicit_solver = 'lusgs'    ! 암시적 반복 방법 (나중에 dadi 등)
+    real(dp),          public :: lusgs_omega = 1.0_dp         ! LU-SGS 대각 계수
+    real(dp),          public :: dt_phys    = 0.0_dp          ! dual time: 실제 시간 간격
+    integer,           public :: inner_iter = 30              ! dual time: 안쪽 (가상 시간) 최대 반복
+    real(dp),          public :: inner_tol  = 1.0e-3_dp       ! dual time: 안쪽 잔차가 첫 반복의 이 비율 아래면 다음 스텝
     character(len=16), public :: flux_name = 'rusanov'
+
+    ! ---- 점성 (flow.in) ----
+    logical,  public :: viscous    = .false.
+    real(dp), public :: reynolds   = 1.0e6_dp      ! rho U L / mu, U = freestream 속도, L = 격자 단위
+    real(dp), public :: prandtl    = 0.72_dp
+    real(dp), public :: t_inf      = 288.15_dp     ! [K], Sutherland 용
+    logical,  public :: sutherland = .true.        ! .false. 이면 mu* = 1 (상수)
+    real(dp), public :: S_suth     = 0.0_dp        ! 110.4 / t_inf  (읽은 뒤 계산)
+    real(dp), public :: visc_coef  = 0.0_dp        ! M_inf / Re     (읽은 뒤 계산)
+
+    ! ---- 차원 출력 (flow.in 의 ref_length 가 있을 때): 결과 파일을 SI 단위로 ----
+    real(dp), parameter, public :: R_gas = 287.05_dp     ! 공기 기체 상수 [J/(kg K)]
+    logical,  public :: dim_out    = .false.
+    real(dp), public :: ref_length = 0.0_dp        ! 격자 길이 1 의 실제 길이 [m]
+    real(dp), public :: p_inf      = 101325.0_dp   ! 비점성일 때 p* = 1/gam 인 압력 [Pa]
+    real(dp), public :: c_ref = 1.0_dp, rho_ref = 1.0_dp, mu_ref = 0.0_dp   ! 음속 [m/s], 밀도 [kg/m3], 점성계수 [Pa s] (T* = 1)
+    real(dp),         public :: t_unit  = 1.0_dp       ! 표시용 시간 환산 (SI: ref_length / c_ref [s],  무차원: 1)
+    character(len=8), public :: t_label = 'Time'       ! 표시용 시간 이름 (SI: 'Time [s]')
 
     ! ---- 격자 (grid.in) ----
     character(len=16),  public :: grid_kind = 'plot3d'      ! 'plot3d' | 'cartesian'
@@ -163,13 +225,14 @@ contains
         character(len=*), intent(in) :: fname
         integer :: k, nt
         character(len=64) :: tok(16)
-        real(dp) :: lim(4)
+        real(dp) :: lim(4), minf
         integer, allocatable :: order(:)
         integer :: nreg_keys
+        character(len=16) :: fmt
 
         call load_kv(fname)
 
-        steady         = get_int('steady', 1) /= 0
+        steady        = get_int('steady', 1) /= 0
         local_dt       = get_int('local_dt', 1) /= 0
         max_steps      = get_int('max_iter', max_steps)
         res_tol        = get_real('res_tol', res_tol)
@@ -185,14 +248,48 @@ contains
         case ('roe');      flux_id = FLUX_ROE
         case default;      call fail_kv('flux = '//trim(flux_name)//' : unknown (use rusanov or roe)')
         end select
+
+        ! 시간 적분: explicit (SSP-RK3) | implicit (정상: LU-SGS 반복,  비정상: dual time = BDF2 + 안쪽 LU-SGS 반복)
+        fmt            = lower(adjustl(get_str('time_scheme', 'explicit')))
+        select case (fmt)
+        case ('explicit', 'rk3');  implicit_ts = .false.
+        case ('implicit');         implicit_ts = .true.
+        case default;  call fail_kv('time_scheme = '//trim(fmt)//' : unknown (use explicit or implicit)')
+        end select
+        implicit_solver = lower(adjustl(get_str('implicit_solver', implicit_solver)))
+        if (implicit_solver /= 'lusgs') call fail_kv('implicit_solver = '//trim(implicit_solver)//' : unknown (use lusgs)')
+        lusgs_omega    = get_real('lusgs_omega', lusgs_omega)
+        if (lusgs_omega < 1.0_dp) call fail_kv('lusgs_omega must be >= 1')
+        dt_phys        = get_real('dt', dt_phys)
+        inner_iter     = get_int('inner_iter', inner_iter)
+        inner_tol      = get_real('inner_tol', inner_tol)
+        if (implicit_ts .and. .not. steady) then
+            if (dt_phys <= 0.0_dp) call fail_kv('time_scheme = implicit with steady = 0 needs dt > 0 (physical time step)')
+            if (inner_iter < 1) call fail_kv('inner_iter must be >= 1')
+        end if
+
         if (b < 1.0_dp) call fail_kv('b must be >= 1')
         if (kappa < 1.0_dp) then
             if (b > (3.0_dp - kappa)/(1.0_dp - kappa) + 1.0e-12_dp) call fail_kv('b must be <= (3-kappa)/(1-kappa)')
         end if
         print_interval = get_int('print_interval', print_interval)
+        print_inner    = get_int('print_inner', print_inner)
         line_row       = get_int('line_row', line_row)
         if (cfl <= 0) call fail_kv('cfl must be > 0')
+        restart        = get_int('restart', 0) /= 0
+        save_interval  = get_int('save_interval', save_interval)
         if (print_interval < 1) call fail_kv('print_interval must be >= 1')
+        if (print_inner < 0) call fail_kv('print_inner must be >= 0 (0: last inner iteration only)')
+        if (save_interval < 0) call fail_kv('save_interval must be >= 0')
+        save_series    = get_int('save_series', 0) /= 0
+        if (save_series .and. save_interval == 0) call fail_kv('save_series = 1 needs save_interval > 0')
+        fmt            = lower(adjustl(get_str('output_format', 'plt')))
+        select case (fmt)
+        case ('plt');    out_plt = .true.;   out_ascii = .false.
+        case ('ascii');  out_plt = .false.;  out_ascii = .true.
+        case ('both');   out_plt = .true.;   out_ascii = .true.
+        case default;    call fail_kv('output_format = '//trim(fmt)//' : unknown (use plt, ascii or both)')
+        end select
 
         ! state-<name> = rho u v p
         do k = 1,nkv
@@ -210,6 +307,53 @@ contains
         if (nstates == 0) call fail_kv('no state-<name> = rho u v p lines')
 
         init_state = need_state(get_str('initial', ''), 'initial')
+
+        ! 점성: state-freestream 을 읽은 뒤라야 M_inf 를 구할 수 있음
+        viscous  = get_int('viscous', 0) /= 0
+        reynolds = get_real('reynolds', reynolds)
+        prandtl  = get_real('prandtl', prandtl)
+        t_inf    = get_real('t_inf', t_inf)
+        select case (lower(adjustl(get_str('viscosity_law', 'sutherland'))))
+        case ('sutherland');  sutherland = .true.
+        case ('constant');    sutherland = .false.
+        case default;         call fail_kv('viscosity_law must be sutherland or constant')
+        end select
+        if (viscous) then
+            k = need_state('freestream', 'viscous (reference state for Re)')
+            minf = sqrt(states(k)%W(2)**2 + states(k)%W(3)**2) / sqrt(gam*states(k)%W(4)/states(k)%W(1))
+            if (minf <= 0.0_dp) call fail_kv('viscous: state-freestream must have a nonzero speed (defines Re)')
+            if (reynolds <= 0.0_dp) call fail_kv('reynolds must be > 0')
+            if (prandtl <= 0.0_dp) call fail_kv('prandtl must be > 0')
+            if (t_inf <= 0.0_dp) call fail_kv('t_inf must be > 0 (kelvin)')
+            visc_coef = minf/reynolds
+            S_suth    = 110.4_dp/t_inf
+        end if
+
+        ! 차원 출력 (ref_length 가 있을 때만): 무차원 기준 -> SI 기준값
+        !   T* = 1 <-> t_inf,  c_ref = sqrt(gam R t_inf),  길이 1 <-> ref_length
+        !   rho_ref: 점성이면 Re 로 (visc_coef = mu_ref / (rho_ref c_ref L)),  비점성이면 p_inf (= rho_ref R t_inf, p* = 1/gam 인 압력)
+        ref_length = get_real('ref_length', 0.0_dp)
+        p_inf      = get_real('p_inf', p_inf)
+        dim_out    = ref_length > 0.0_dp
+        if (find_key('ref_length') > 0 .and. .not. dim_out) call fail_kv('ref_length must be > 0 [m]')
+        if (dim_out) then
+            if (t_inf <= 0.0_dp) call fail_kv('t_inf must be > 0 (kelvin)')
+            c_ref  = sqrt(gam*R_gas*t_inf)
+            t_unit = ref_length/c_ref
+            t_label = 'Time [s]'
+            ! 시간 입력 (t_end, dt) 은 초 [s] 로 받음 -> 내부 무차원으로
+            t_end   = t_end/t_unit
+            dt_phys = dt_phys/t_unit
+            mu_ref = 1.716e-5_dp*(t_inf/273.15_dp)**1.5_dp*(273.15_dp + 110.4_dp)/(t_inf + 110.4_dp)   ! Sutherland [Pa s]
+            if (viscous) then
+                rho_ref = mu_ref/(visc_coef*c_ref*ref_length)
+                if (find_key('p_inf') > 0) write(*,'(a)') &
+                    ' Warning: flow.in: p_inf is not used with viscous = 1 (density follows from reynolds and ref_length)'
+            else
+                if (p_inf <= 0.0_dp) call fail_kv('p_inf must be > 0 [Pa]')
+                rho_ref = p_inf/(R_gas*t_inf)
+            end if
+        end if
 
         ! region-<k> = name x0 x1 y0 y1   (k 순서대로)
         nreg_keys = 0
@@ -300,14 +444,16 @@ contains
             if (nt > 1 + nnum + 1) call fail_line(k, 'too many items')
 
             istate = 0
-            if (code == BC_inlet .or. code == BC_farfield) then
+            if (code == BC_inlet .or. code == BC_farfield .or. code == BC_wall_iso) then
                 if (nt == 1 + nnum + 1) then
                     istate = need_state(tok(nt), trim(kv(k)%key))
+                else if (code == BC_wall_iso) then
+                    call fail_line(k, 'code 130 needs a wall state name (wall velocity u v, T = gamma p / rho)')
                 else
                     istate = need_state('freestream', trim(kv(k)%key)//' (default state)')
                 end if
             else if (nt == 1 + nnum + 1) then
-                call fail_line(k, 'a state name is only used with codes 200 and 210')
+                call fail_line(k, 'a state name is only used with codes 130, 200 and 210')
             end if
 
             if (npatches == max_patches) call fail_line(k, 'too many bc lines')
@@ -339,16 +485,37 @@ contains
             end if
             write(*,'(a,a)') '  time step: ', merge('local (each cell its own dt)', 'global (min dt)             ', local_dt)
         else
-            write(*,'(a,es12.4)')     '  unsteady : t_end = ', t_end
+            write(*,'(a,es12.4,a)')   '  unsteady : t_end = ', t_end*t_unit, trim(merge(' s', '  ', dim_out))
         end if
         write(*,'(a,f6.3,a,f6.3)')    '  CFL      : ', cfl, '    gamma = ', gam
         write(*,'(a,f6.3,a,f7.4,a,f6.3)') '  MUSCL    : sigma = ', sigma, '    kappa = ', kappa, '    b = ', b
         write(*,'(a,a)')              '  flux     : ', trim(flux_name)
+        if (implicit_ts .and. steady) then
+            write(*,'(a,f5.2,a)') '  time int : implicit LU-SGS  (omega = ', lusgs_omega, ')'
+        else if (implicit_ts) then
+            write(*,'(a,es10.3,2a,i0,a,es9.2,a,f5.2,a)') '  time int : dual time BDF2, dt = ', dt_phys*t_unit, &
+                trim(merge(' s', '  ', dim_out)), &
+                ',  inner LU-SGS <= ', inner_iter, ' its to ', inner_tol, '  (omega = ', lusgs_omega, ')'
+        else
+            write(*,'(a)')        '  time int : explicit SSP-RK3'
+        end if
         write(*,'(a)') '  states   :         rho           u           v           p'
         do k = 1,nstates
             write(*,'(4x,a12,4es12.4)') states(k)%name, states(k)%W
         end do
         write(*,'(a,a,a,i0,a)') '  initial  : ', trim(states(init_state)%name), '  (+ ', nregions, ' region(s))'
+        if (restart) write(*,'(a,a)') '  restart  : ', trim(case_path(trim(output_name)//'_restart.bin'))
+        if (viscous) write(*,'(a,es10.3,a,f5.2,a,es10.3,a,a)') '  viscous  : Re = ', reynolds, &
+            '  Pr = ', prandtl, '  M/Re = ', visc_coef, '  mu: ', merge('sutherland', 'constant  ', sutherland)
+        if (dim_out) then
+            write(*,'(a,es10.3,a,f7.2,a,es10.3,a,es10.3,a)') '  SI out   : L = ', ref_length, ' m,  T = ', t_inf, &
+                ' K,  rho = ', rho_ref, ' kg/m3,  p = ', rho_ref*R_gas*t_inf, ' Pa  (at rho* = 1, p* = 1/gamma)'
+            write(*,'(a,f8.2,a,es10.3,a,es11.4,a)') '             c = ', c_ref, ' m/s,  mu = ', mu_ref, &
+                ' Pa s,  time 1 = ', ref_length/c_ref, ' s'
+            if (.not. steady) write(*,'(a,es11.4,a,es11.4,a)') '             t_end = ', t_end*t_unit, ' s  (', t_end, ' nondim)'
+            if (.not. steady .and. implicit_ts) write(*,'(a,es11.4,a,es11.4,a)') '             dt    = ', dt_phys*t_unit, &
+                ' s  (', dt_phys, ' nondim)'
+        end if
         write(*,'(a)') '  bc       :  face        nodes      code  type       state'
         do k = 1,npatches
             if (patches(k)%n2 == 0) then
@@ -364,7 +531,10 @@ contains
                 write(*,*)
             end if
         end do
-        write(*,'(a,a)') '  output   : ', trim(case_path(trim(output_name)//'_*.dat'))
+        write(*,'(a,a,a,a,a)') '  output   : ', trim(case_path(trim(output_name)//'_*')), &
+            merge('  (result: plt', '  (result:    ', out_plt), merge(' ascii)', ')      ', out_ascii)
+        if (save_interval > 0) write(*,'(a,i0,a,a)') '  save     : every ', save_interval, ' iterations (result + restart)', &
+            merge(', result numbered by iteration (series)', '                                       ', save_series)
         write(*,'(a)')   ' ================================================================'
     end subroutine print_case
 
@@ -381,6 +551,8 @@ contains
         character(len=9) :: s
         select case (code)
         case (BC_wall);      s = 'wall'
+        case (BC_wall_ad);   s = 'wall_ad'
+        case (BC_wall_iso);  s = 'wall_iso'
         case (BC_farfield);  s = 'farfield'
         case (BC_inlet);     s = 'inlet'
         case (BC_outlet);    s = 'outlet'

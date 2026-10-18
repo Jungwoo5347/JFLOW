@@ -1,18 +1,19 @@
 # JFLOW
 
-2D and 3D compressible Euler solvers — cell-centered finite volume on structured curvilinear grids, written in Fortran.
+2D compressible laminar Navier–Stokes and 3D Euler solvers — cell-centered finite volume on structured curvilinear grids, written in Fortran.
 Reads PLOT3D grids (e.g. from Pointwise).
 
 ![RAE 2822](docs/images/rae2822_euler_vs_exp.png)
 
 ## Features
 
+- Laminar Navier–Stokes (2D): Green–Gauss cell gradients with a face-normal correction, Sutherland viscosity, no-slip adiabatic and isothermal (moving) walls
 - Riemann solvers: Rusanov, Roe (Harten entropy fix in 3D)
 - MUSCL (κ-scheme, minmod) with characteristic-variable reconstruction
-- SSP-RK3 time integration, local time stepping for steady flows; implicit LU-SGS in 3D
-- BCs: slip wall, symmetry, supersonic inlet, outlet, Riemann-invariant farfield
+- SSP-RK3 time integration, local time stepping for steady flows; implicit LU-SGS; dual time stepping (BDF2 + inner LU-SGS) for unsteady flows in 2D
+- BCs: slip wall, no-slip wall, symmetry, supersonic inlet, outlet, Riemann-invariant farfield
 - Automatic C-grid wake cut / O-grid seam detection (3D: also faces between blocks)
-- 3D: multi-block grids, restart / periodic saves / STOP file, Tecplot binary (.plt) output
+- Restart and periodic saves, Tecplot binary (.plt) output; 2D: numbered time series for unsteady runs, results in SI units with `$ref_length`; 3D: multi-block grids, STOP file
 - OpenMP
 
 ## Build & run
@@ -23,7 +24,8 @@ build.bat release omp
 ```
 
 A case folder contains `grid.in` and `flow.in`. Results are written to the same folder:
-`<output>_result.dat` (Tecplot), `<output>_line.dat`, `<output>_residual.dat`.
+`<output>_result.plt` (Tecplot binary; `$output_format = ascii | both` for `.dat`), `<output>_line.dat`, `<output>_residual.dat`,
+`<output>_restart.bin` (`$restart = 1` continues from it; `$save_interval = N` saves every N iterations).
 
 ## Input
 
@@ -35,7 +37,8 @@ $bc-1-3  = 110 49 305           # face (1 imin, 2 imax, 3 jmin, 4 jmax) = code [
 $bc-1-4  = 200 freestream
 $output  = airfoil
 ```
-BC codes: `110` wall, `200` farfield, `210` inlet, `220` outlet, `300` symmetry.
+BC codes: `110` slip wall, `120` no-slip adiabatic wall, `130` no-slip isothermal wall (`130 <state>`: wall velocity u v and T = γp/ρ from that state),
+`200` farfield, `210` inlet, `220` outlet, `300` symmetry.
 Faces without a BC are connected automatically if they coincide with another face.
 
 `flow.in`
@@ -54,6 +57,22 @@ $initial  = freestream
 ```
 Nondimensionalization: ρ = 1, p = 1/γ → speed of sound 1, so `u = M cos α`, `v = M sin α`.
 All keys are listed at the top of [src/case_setup.f90](src/case_setup.f90).
+
+Viscous (laminar Navier–Stokes, 2D)
+```
+$viscous       = 1              # 0 Euler, 1 laminar Navier-Stokes
+$reynolds      = 1.0e5          # rho U L / mu, U = speed of state-freestream, L = 1 grid unit
+$prandtl       = 0.72
+$viscosity_law = sutherland     # sutherland | constant
+$t_inf         = 288.15         # [K], Sutherland
+```
+The viscous terms carry the factor M∞/Re (velocities are scaled by the speed of sound).
+
+Time integration: `$time_scheme = explicit` (SSP-RK3) or `implicit`: LU-SGS for steady flows (`$cfl` 5–30),
+dual time stepping for unsteady flows (`$dt` physical step, `$inner_iter`, `$inner_tol`; the screen and
+`<output>_residual.dat` show every inner iteration under its time step).
+`$save_series = 1` writes numbered results to `res/` for animations. With `$ref_length` [m] the results,
+`t_end` and `dt` are in SI units (x [m], ρ [kg/m³], u [m/s], p [Pa], t [s]).
 
 ## Example: Sod shock tube
 
@@ -85,8 +104,9 @@ $region-1 = left  *  0.5  *  *
 
 ## 3D solver
 
-A 3D version lives in [src3d/](src3d/) next to the unchanged 2D code: same scheme
-(MUSCL + Rusanov/Roe + SSP-RK3, local time stepping), same BCs and input format.
+A 3D Euler version lives in [src3d/](src3d/) next to the 2D code: same scheme
+(MUSCL + Rusanov/Roe + SSP-RK3, local time stepping), same inviscid BCs and input format.
+The 2D viscous terms are not ported to 3D yet.
 
 ```
 build.bat 3d release omp
@@ -143,6 +163,12 @@ Reference area: half-wing planform 0.7530 m².
 ## Results
 
 RAE 2822, M 0.7294, α 2.516° — Euler vs. Airbus pETW experiment ([NWTF](https://www.nwtf.ac.uk/dataset/2687/)), top figure.
+
+Compressible Couette flow (laminar Navier–Stokes verification) — top wall moving at Mach 0.5, Re 100, both walls isothermal, 40 cells across.
+Velocity is linear and viscous heating gives the parabolic temperature profile; JFLOW matches the exact solution
+within 0.07 % of the wall speed (u) and 1.4e-5 in T (0.16 % of the 0.9 % temperature rise).
+
+![Couette flow](docs/images/couette_flow.png)
 
 Sod shock tube, 100 cells — primitive vs. characteristic reconstruction.
 

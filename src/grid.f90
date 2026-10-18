@@ -20,6 +20,8 @@ module grid
     ! 셀 (1:nx, 1:ny) : 셀 (ic,jc)는 노드 (ic-1,jc-1), (ic,jc-1), (ic,jc), (ic-1,jc)로 둘러싸임
     real(dp), allocatable :: xc(:,:), yc(:,:)   ! 셀 중심
     real(dp), allocatable :: area(:,:)          ! 셀 면적
+    real(dp), allocatable :: xcg(:,:), ycg(:,:) ! 셀 중심, 고스트 첫 층 포함 (0:nx+1, 0:ny+1)
+                                                !   고스트 = 경계 면 중점에 대해 내부 셀 중심을 대칭, 모서리는 안 씀
 
     ! i-면 (fi, jc) (0:nx, 1:ny) : 셀 fi 와 fi+1 사이, 법선은 +i 방향
     real(dp), allocatable :: si_x(:,:), si_y(:,:), si_len(:,:)
@@ -288,6 +290,23 @@ contains
                 sj_x(ic,fj)   = -ey / sj_len(ic,fj)
                 sj_y(ic,fj)   =  ex / sj_len(ic,fj)
             end do
+        end do
+
+        ! 고스트 첫 층까지 포함한 셀 중심 (점성항 면 기울기용): 고스트 = 2 * 경계 면 중점 - 내부 셀 중심
+        allocate(xcg(0:nx+1,0:ny+1), ycg(0:nx+1,0:ny+1))
+        xcg = 0.0_dp;  ycg = 0.0_dp
+        xcg(1:nx,1:ny) = xc;  ycg(1:nx,1:ny) = yc
+        do jc = 1, ny
+            xcg(0,   jc) = (x(0, jc-1) + x(0, jc)) - xc(1, jc)
+            ycg(0,   jc) = (y(0, jc-1) + y(0, jc)) - yc(1, jc)
+            xcg(nx+1,jc) = (x(nx,jc-1) + x(nx,jc)) - xc(nx,jc)
+            ycg(nx+1,jc) = (y(nx,jc-1) + y(nx,jc)) - yc(nx,jc)
+        end do
+        do ic = 1, nx
+            xcg(ic,0   ) = (x(ic-1,0 ) + x(ic,0 )) - xc(ic,1 )
+            ycg(ic,0   ) = (y(ic-1,0 ) + y(ic,0 )) - yc(ic,1 )
+            xcg(ic,ny+1) = (x(ic-1,ny) + x(ic,ny)) - xc(ic,ny)
+            ycg(ic,ny+1) = (y(ic-1,ny) + y(ic,ny)) - yc(ic,ny)
         end do
     end subroutine compute_metrics
 

@@ -1,11 +1,17 @@
 module solver
     use euler
     use grid
-    use case_setup, only: cfl,sigma,kappa,b, flux_id, FLUX_RUSANOV, FLUX_ROE                              ! CFL 수 (입력 파일 &control 에서)
+    use case_setup, only: cfl,sigma,kappa,b, flux_id, FLUX_RUSANOV, FLUX_ROE, &
+                          viscous, prandtl, sutherland, S_suth, visc_coef                            ! CFL 수 (입력 파일 &control 에서)
 
     implicit none
 
     real(dp), allocatable :: fluxi(:,:,:), fluxj(:,:,:)    ! 면 플럭스 (작업용, residual 전용)
+    real(dp), allocatable :: fluxvi(:,:,:), fluxvj(:,:,:)  ! 면 점성 플럭스 F_v.n (단위 길이당, M_inf/Re 포함, viscous 일 때만)
+
+    ! 점성항 작업 배열 (셀, 고스트 첫 층 포함 0:nx+1, 0:ny+1): vis_stress 가 채우고 cal_tau_four 가 읽음
+    real(dp), allocatable :: Wc(:,:,:), Tpr(:,:)                 ! 셀 원시변수 (rho, u, v, p), 온도 T = gam p / rho
+    real(dp), allocatable :: dudx(:,:), dudy(:,:), dvdx(:,:), dvdy(:,:), dTdx(:,:), dTdy(:,:)   ! 셀 기울기
 
     contains
 
@@ -181,6 +187,178 @@ module solver
 
     end subroutine Roe
 
+    !> 면 하나의 점성 플럭스 F_v.n (단위 길이당): 셀 L = (iL,jL) 과 R = (iR,jR) 사이 면
+    !>   tau, q 는 cal_tau_four 결과, (fnx, fny) 는 면 단위 법선 (L -> R)
+    !>   F_v.n = (M_inf/Re) * ( 0,  txx nx + txy ny,  txy nx + tyy ny,  u (txx nx + txy ny) + v (txy nx + tyy ny) - q.n )
+    subroutine vis_flux(iL,jL, iR,jR, txxf,txyf,tyyf,qxf,qyf, fnx,fny, Fv)
+        integer,  intent(in)  :: iL, jL, iR, jR
+        real(dp), intent(in)  :: txxf, txyf, tyyf, qxf, qyf, fnx, fny
+        real(dp), intent(out) :: Fv(nvar)
+
+        real(dp) :: u, v
+
+        ! 면 속도 = 양옆 셀 평균 (점착 벽이면 고스트가 -u 라서 0)
+        u = 0.5_dp*(Wc(2,iL,jL) + Wc(2,iR,jR))
+        v = 0.5_dp*(Wc(3,iL,jL) + Wc(3,iR,jR))
+
+        Fv(1) = 0.0_dp
+        Fv(2) = txxf*fnx + txyf*fny
+        Fv(3) = txyf*fnx + tyyf*fny
+        Fv(4) = u*Fv(2) + v*Fv(3) - (qxf*fnx + qyf*fny)
+        Fv    = visc_coef*Fv
+
+    end subroutine vis_flux
+
+
+    !> 모든 면의 점성 플럭스 F_v.n (단위 길이당)
+    !>   셀 원시변수, 온도 -> 셀 기울기 (Green-Gauss) -> 면마다 tau, q (cal_tau_four) -> F_v.n (vis_flux)
+    !>   Q 의 고스트 첫 층은 bc() 로 채워져 있어야 함
+    subroutine vis_stress(Q, fvi, fvj)
+        real(dp), intent(in)  :: Q(nvar,1-ng:nx+ng,1-ng:ny+ng)
+        real(dp), intent(out) :: fvi(nvar,0:nx,1:ny)       ! i-면
+        real(dp), intent(out) :: fvj(nvar,1:nx,0:ny)       ! j-면
+
+        real(dp) :: txxf, txyf, tyyf, qxf, qyf
+        integer :: i,j
+
+        if (.not. allocated(Wc)) then
+            allocate(Wc(nvar,0:nx+1,0:ny+1), Tpr(0:nx+1,0:ny+1))
+            allocate(dudx(0:nx+1,0:ny+1), dudy(0:nx+1,0:ny+1), dvdx(0:nx+1,0:ny+1), dvdy(0:nx+1,0:ny+1))
+            allocate(dTdx(0:nx+1,0:ny+1), dTdy(0:nx+1,0:ny+1))
+            Wc = 0.0_dp;  Tpr = 0.0_dp            ! 모서리 고스트 (안 씀) 에 쓰레기값이 남지 않게
+        end if
+
+        ! 셀 원시변수, 온도 (고스트 첫 층 포함, 모서리 제외: 모서리 Q 는 0 이라 c2p 에서 0 으로 나눔)
+        do j = 0,ny+1
+            do i = 0,nx+1
+                if ((i == 0 .or. i == nx+1) .and. (j == 0 .or. j == ny+1)) cycle
+                call c2p(Q(:,i,j), Wc(:,i,j))
+                Tpr(i,j) = gam*Wc(4,i,j)/Wc(1,i,j)
+            end do
+        end do
+
+        ! 셀 기울기 (Green-Gauss)
+        call grad(Wc(2,:,:), dudx, dudy)
+        call grad(Wc(3,:,:), dvdx, dvdy)
+        call grad(Tpr,       dTdx, dTdy)
+
+        ! i-면 (i,j): 셀 (i,j) | (i+1,j)
+        !$omp parallel do private(i, txxf, txyf, tyyf, qxf, qyf)
+        do j = 1,ny
+            do i = 0,nx
+                call cal_tau_four(i,j, i+1,j, txxf, txyf, tyyf, qxf, qyf)
+                call vis_flux(i,j, i+1,j, txxf, txyf, tyyf, qxf, qyf, si_x(i,j), si_y(i,j), fvi(:,i,j))
+            end do
+        end do
+        !$omp end parallel do
+
+        ! j-면 (i,j): 셀 (i,j) | (i,j+1)
+        !$omp parallel do private(i, txxf, txyf, tyyf, qxf, qyf)
+        do j = 0,ny
+            do i = 1,nx
+                call cal_tau_four(i,j, i,j+1, txxf, txyf, tyyf, qxf, qyf)
+                call vis_flux(i,j, i,j+1, txxf, txyf, tyyf, qxf, qyf, sj_x(i,j), sj_y(i,j), fvj(:,i,j))
+            end do
+        end do
+        !$omp end parallel do
+
+    end subroutine vis_stress
+
+    !> 무차원 점성계수 mu* = mu / mu_inf (자유류 T = 1 에서 1): Sutherland, 또는 상수 1 (viscosity_law)
+    elemental real(dp) function mu_star(T)
+        real(dp), intent(in) :: T
+        if (sutherland) then
+            mu_star = T**1.5_dp * (1.0_dp + S_suth)/(T + S_suth)
+        else
+            mu_star = 1.0_dp
+        end if
+    end function mu_star
+
+    !> 면 하나의 tau, q: 셀 L = (iL,jL) 과 R = (iR,jR) 사이 면 (i-면, j-면 공통)
+    !>   i-면 (i,j): L = (i,j), R = (i+1,j)  /  j-면 (i,j): L = (i,j), R = (i,j+1)
+    !>   셀 값, 셀 기울기는 vis_stress 가 채운 모듈 배열 (Wc, Tpr, dudx ...), 셀 중심은 grid 의 xcg, ycg
+    subroutine cal_tau_four(iL,jL, iR,jR, txxf,txyf,tyyf,qxf,qyf)
+        integer,  intent(in)  :: iL, jL, iR, jR
+        real(dp), intent(out) :: txxf,txyf,tyyf,qxf,qyf
+
+        real(dp) :: TL, TR, Tf, muf
+        real(dp) :: dist, tx, ty, corr
+        real(dp) :: dudx_f, dudy_f, dvdx_f, dvdy_f, dTdx_f, dTdy_f    ! 면에서의 기울기 (평균 + 보정)
+
+        TL = Tpr(iL,jL)
+        TR = Tpr(iR,jR)
+
+        ! 면 점성계수 mu* (자유류에서 1): 면 온도로 Sutherland, 또는 상수
+        Tf = 0.5_dp*(TL + TR)
+        muf = mu_star(Tf)
+
+        ! 두 셀 중심을 잇는 단위 벡터 (tx, ty) 와 거리
+        dist = sqrt((xcg(iR,jR) - xcg(iL,jL))**2 + (ycg(iR,jR) - ycg(iL,jL))**2)
+        tx = (xcg(iR,jR) - xcg(iL,jL))/dist
+        ty = (ycg(iR,jR) - ycg(iL,jL))/dist
+
+        ! 면 기울기 = 양옆 평균 + 보정 (t 방향 성분만 두 셀 값의 직접 차분으로 바꿈)
+        dudx_f = 0.5_dp*(dudx(iL,jL) + dudx(iR,jR))
+        dudy_f = 0.5_dp*(dudy(iL,jL) + dudy(iR,jR))
+        corr   = (Wc(2,iR,jR) - Wc(2,iL,jL))/dist - (dudx_f*tx + dudy_f*ty)
+        dudx_f = dudx_f + corr*tx
+        dudy_f = dudy_f + corr*ty
+
+        dvdx_f = 0.5_dp*(dvdx(iL,jL) + dvdx(iR,jR))
+        dvdy_f = 0.5_dp*(dvdy(iL,jL) + dvdy(iR,jR))
+        corr   = (Wc(3,iR,jR) - Wc(3,iL,jL))/dist - (dvdx_f*tx + dvdy_f*ty)
+        dvdx_f = dvdx_f + corr*tx
+        dvdy_f = dvdy_f + corr*ty
+
+        dTdx_f = 0.5_dp*(dTdx(iL,jL) + dTdx(iR,jR))
+        dTdy_f = 0.5_dp*(dTdy(iL,jL) + dTdy(iR,jR))
+        corr   = (TR - TL)/dist - (dTdx_f*tx + dTdy_f*ty)
+        dTdx_f = dTdx_f + corr*tx
+        dTdy_f = dTdy_f + corr*ty
+
+        ! 응력 (Stokes 가정), 열유속 q = -mu*/((gam-1) Pr) grad T
+        !   M_inf/Re (visc_coef) 는 여기서 곱하지 않음: 점성 플럭스를 만들 때 한 번만 곱할 것
+        txxf = muf*(4.0_dp/3.0_dp*dudx_f - 2.0_dp/3.0_dp*dvdy_f)
+        tyyf = muf*(4.0_dp/3.0_dp*dvdy_f - 2.0_dp/3.0_dp*dudx_f)
+        txyf = muf*(dudy_f + dvdx_f)
+        qxf  = -muf/((gam - 1.0_dp)*prandtl)*dTdx_f
+        qyf  = -muf/((gam - 1.0_dp)*prandtl)*dTdy_f
+
+    end subroutine cal_tau_four
+
+    subroutine grad(phi,phix,phiy)
+        real(dp), intent(in) :: phi(0:,0:)              ! (0:nx+1, 0:ny+1), 띄엄띄엄한 단면 (Wc(2,:,:)) 도 복사 없이 받음
+        real(dp), intent(out) :: phix(0:nx+1,0:ny+1), phiy(0:nx+1,0:ny+1)
+        
+        real(dp) :: pE, pW, pS, pN
+        integer :: i,j
+
+
+        !$omp parallel do private(i, pE, pW, pN, pS)
+        do j = 1,ny
+            do i = 1,nx
+                pE = 0.5_dp*(phi(i,j) + phi(i+1,j))
+                pW = 0.5_dp*(phi(i-1,j) + phi(i,j))
+                pN = 0.5_dp*(phi(i,j) + phi(i,j+1))
+                pS = 0.5_dp*(phi(i,j-1) + phi(i,j))
+
+                phix(i,j) = ( pE*si_x(i,j)*si_len(i,j) - pW*si_x(i-1,j)*si_len(i-1,j) &
+                            + pN*sj_x(i,j)*sj_len(i,j) - pS*sj_x(i,j-1)*sj_len(i,j-1) ) / area(i,j)
+                phiy(i,j) = ( pE*si_y(i,j)*si_len(i,j) - pW*si_y(i-1,j)*si_len(i-1,j) &
+                            + pN*sj_y(i,j)*sj_len(i,j) - pS*sj_y(i,j-1)*sj_len(i,j-1) ) / area(i,j)
+            end do
+        end do
+        !$omp end parallel do
+
+
+        phix(0,:) = 0.0_dp;  phix(nx+1,:) = 0.0_dp;  phix(:,0) = 0.0_dp;  phix(:,ny+1) = 0.0_dp
+        phiy(0,:) = 0.0_dp;  phiy(nx+1,:) = 0.0_dp;  phiy(:,0) = 0.0_dp;  phiy(:,ny+1) = 0.0_dp
+        phix(0,   1:ny) = phix(1, 1:ny);  phix(nx+1,1:ny) = phix(nx,1:ny)
+        phiy(0,   1:ny) = phiy(1, 1:ny);  phiy(nx+1,1:ny) = phiy(nx,1:ny)
+        phix(1:nx,0   ) = phix(1:nx,1 );  phix(1:nx,ny+1) = phix(1:nx,ny)
+        phiy(1:nx,0   ) = phiy(1:nx,1 );  phiy(1:nx,ny+1) = phiy(1:nx,ny)
+
+    end subroutine grad
 
 
     !> 리만 솔버 고르기 (flow.in 의 flux = rusanov | roe)
@@ -195,7 +373,6 @@ module solver
             call rusanov(QL, QR, fnx, fny, F)
         end select
     end subroutine riemann
-
 
     !> minmod 리미터: 부호가 같으면 절댓값이 작은 쪽, 다르면 (극값) 0
     elemental function minmod(a,b) result(m)
@@ -217,7 +394,6 @@ module solver
 
     end subroutine
 
-
     subroutine residual(Q,R)
         real(dp), intent(inout) :: Q(:,1-ng:,1-ng:)
         real(dp), intent(out) :: R(nvar,0:nx+1,0:ny+1)
@@ -227,38 +403,38 @@ module solver
 
         if (.not. allocated(fluxi)) then
             allocate(fluxi(nvar, 0:nx, 1:ny), fluxj(nvar, 1:nx, 0:ny))
+            if (viscous) allocate(fluxvi(nvar, 0:nx, 1:ny), fluxvj(nvar, 1:nx, 0:ny))
         end if
 
         R = 0.0_dp
 
+        ! 점성 플럭스 (모든 면): 면 플럭스 = (비점성 - 점성) * 면 길이
+        if (viscous) call vis_stress(Q, fluxvi, fluxvj)
 
-        ! OpenMP: 바깥 루프(줄)를 스레드에 나눔. F, QL, QR 은 스레드마다 따로 (private)
-        !   fluxi, fluxj, R 은 스레드마다 다른 위치에 쓰므로 공유해도 됨
         !$omp parallel private(fi, fj, ic, jc, F, QL, QR)
 
-        ! i-면 루프: fi = 면 번호 (셀 fi 와 fi+1 사이), jc = 셀 줄
-        !   MUSCL 인자 순서: 가운데(fi), 왼쪽(fi-1), 오른쪽(fi+1), 그 오른쪽(fi+2)
+
         !$omp do
         do jc = 1,ny
             do fi = 0,nx
                 call MUSCL(Q(:,fi,jc), Q(:,fi-1,jc), Q(:,fi+1,jc), Q(:,fi+2,jc), si_x(fi,jc), si_y(fi,jc), QL, QR)
                 call riemann(QL, QR, si_x(fi,jc), si_y(fi,jc), F)
+                if (viscous) F = F - fluxvi(:,fi,jc)
                 fluxi(:,fi,jc) = F*si_len(fi,jc)
             end do
         end do
         !$omp end do nowait
 
-        ! j-면 루프: fj = 면 번호 (셀 fj 와 fj+1 사이), ic = 셀 칸
         !$omp do
         do fj = 0,ny
             do ic = 1,nx
                 call MUSCL(Q(:,ic,fj), Q(:,ic,fj-1), Q(:,ic,fj+1), Q(:,ic,fj+2), sj_x(ic,fj), sj_y(ic,fj), QL, QR)
                 call riemann(QL, QR, sj_x(ic,fj), sj_y(ic,fj), F)
+                if (viscous) F = F - fluxvj(:,ic,fj)
                 fluxj(:,ic,fj) = F*sj_len(ic,fj)
             end do
         end do
         !$omp end do
-        ! (여기서 모든 스레드가 기다림: R 은 fluxi, fluxj 가 전부 채워진 뒤 계산)
 
         !$omp do
         do jc = 1, ny
@@ -273,7 +449,6 @@ module solver
 
 
     end subroutine residual
-
 
     !> CFL 조건으로 dt 계산
     !>   셀마다 dt = cfl * A / (lam_i + lam_j)
